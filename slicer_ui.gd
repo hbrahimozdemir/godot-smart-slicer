@@ -21,6 +21,12 @@ var _zoom_label:  Label
 var _format_opt:  OptionButton
 var _props_box:   VBoxContainer
 var _file_dialog: FileDialog
+var _chk_atlas:   CheckBox
+var _chk_spriteframes: CheckBox
+var _chk_png: CheckBox
+var _wand_btn:    Button
+var _brush_erase_btn: Button
+var _props_grid: GridContainer
 
 # State
 var _current_tex:      Texture2D
@@ -53,6 +59,9 @@ func _build_ui() -> void:
 	_canvas.selection_changed.connect(_on_canvas_selection_changed)
 	_canvas.rects_changed.connect(_on_rects_changed)
 	_canvas.zoom_changed.connect(_on_canvas_zoom_changed)
+	_canvas.erase_clicked.connect(_on_erase_clicked)
+	_canvas.brush_erase_clicked.connect(_on_brush_erase_clicked)
+	_canvas.brush_erase_dragged.connect(_on_brush_erase_dragged)
 	scroll.add_child(_canvas)
 
 	add_child(_make_right_panel())
@@ -129,10 +138,19 @@ func _make_toolbar() -> HBoxContainer:
 
 	tb.add_child(VSeparator.new())
 
-	_format_opt = OptionButton.new()
-	_format_opt.add_item("PNG (.png)")
-	_format_opt.add_item("AtlasTexture (.tres)")
-	tb.add_child(_format_opt)
+	_wand_btn = Button.new()
+	_wand_btn.text = "Magic Wand Erase"
+	_wand_btn.toggle_mode = true
+	_wand_btn.tooltip_text = "Click on canvas to erase color regions (Magic Wand style)"
+	_wand_btn.toggled.connect(_on_wand_toggled)
+	tb.add_child(_wand_btn)
+
+	_brush_erase_btn = Button.new()
+	_brush_erase_btn.text = "Brush Erase"
+	_brush_erase_btn.toggle_mode = true
+	_brush_erase_btn.tooltip_text = "Click and drag on canvas to erase pixels (Brush style)"
+	_brush_erase_btn.toggled.connect(_on_brush_toggled)
+	tb.add_child(_brush_erase_btn)
 
 	var extract_btn := Button.new()
 	extract_btn.text = "Extract All"
@@ -177,16 +195,16 @@ func _make_right_panel() -> PanelContainer:
 	_name_edit.text_changed.connect(_on_name_changed)
 	_props_box.add_child(_name_edit)
 
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.add_theme_constant_override("h_separation", 4)
-	grid.add_theme_constant_override("v_separation", 3)
-	_props_box.add_child(grid)
+	_props_grid = GridContainer.new()
+	_props_grid.columns = 2
+	_props_grid.add_theme_constant_override("h_separation", 4)
+	_props_grid.add_theme_constant_override("v_separation", 3)
+	_props_box.add_child(_props_grid)
 
-	_spin_x = _make_spin("X", grid)
-	_spin_y = _make_spin("Y", grid)
-	_spin_w = _make_spin("W", grid)
-	_spin_h = _make_spin("H", grid)
+	_spin_x = _make_spin("X", _props_grid)
+	_spin_y = _make_spin("Y", _props_grid)
+	_spin_w = _make_spin("W", _props_grid)
+	_spin_h = _make_spin("H", _props_grid)
 
 	for sb in [_spin_x, _spin_y, _spin_w, _spin_h]:
 		sb.value_changed.connect(func(_v: float) -> void: _on_prop_changed())
@@ -195,6 +213,27 @@ func _make_right_panel() -> PanelContainer:
 	del_btn.text = "Delete Selected"
 	del_btn.pressed.connect(_on_delete_selected)
 	_props_box.add_child(del_btn)
+
+	vbox.add_child(HSeparator.new())
+
+	var exp_lbl := Label.new()
+	exp_lbl.text = "Export Formats"
+	vbox.add_child(exp_lbl)
+
+	_chk_png = CheckBox.new()
+	_chk_png.text = "PNG Slices (.png)"
+	_chk_png.button_pressed = true
+	vbox.add_child(_chk_png)
+
+	_chk_atlas = CheckBox.new()
+	_chk_atlas.text = "AtlasTexture (.tres)"
+	_chk_atlas.button_pressed = false
+	vbox.add_child(_chk_atlas)
+
+	_chk_spriteframes = CheckBox.new()
+	_chk_spriteframes.text = "SpriteFrames (.tres)"
+	_chk_spriteframes.button_pressed = false
+	vbox.add_child(_chk_spriteframes)
 
 	return panel
 
@@ -259,8 +298,80 @@ func _on_extract() -> void:
 	if not _current_tex or _canvas.rects.is_empty():
 		return
 	_Extractor.extract(_current_tex, _canvas.rects,
-		"png" if _format_opt.selected == 0 else "tres",
+		_chk_png.button_pressed,
+		_chk_atlas.button_pressed,
+		_chk_spriteframes.button_pressed,
 		_current_tex_path, _canvas.slice_names)
+
+func _on_wand_toggled(toggled: bool) -> void:
+	_canvas.erase_mode = toggled
+	if toggled:
+		_brush_erase_btn.set_pressed_no_signal(false)
+		_canvas.brush_erase_mode = false
+
+func _on_brush_toggled(toggled: bool) -> void:
+	_canvas.brush_erase_mode = toggled
+	if toggled:
+		_wand_btn.set_pressed_no_signal(false)
+		_canvas.erase_mode = false
+
+func _on_brush_erase_clicked(img_pos: Vector2i) -> void:
+	_do_brush_erase(img_pos)
+
+func _on_brush_erase_dragged(img_pos: Vector2i) -> void:
+	_do_brush_erase(img_pos)
+
+func _do_brush_erase(img_pos: Vector2i) -> void:
+	if not _current_tex or _current_tex_path.is_empty():
+		return
+	var src_img := _current_tex.get_image()
+	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, 8)
+	if result == null or result.is_empty():
+		return
+		
+	var base_dir := _current_tex_path.get_base_dir()
+	var base_name := _current_tex_path.get_file().get_basename()
+	var target_path := _current_tex_path
+	if not (base_name.ends_with("_nobg") or base_name.ends_with("_edited")):
+		target_path = base_dir + "/" + base_name + "_edited.png"
+		_current_tex_path = target_path
+		_path_label.text = base_name + "_edited.png"
+		
+	var abs_out := ProjectSettings.globalize_path(target_path)
+	var err := result.save_png(abs_out)
+	if err != OK:
+		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
+		return
+		
+	var new_tex := ImageTexture.create_from_image(result)
+	_current_tex = new_tex
+	_canvas.load_texture(new_tex)
+
+func _on_erase_clicked(img_pos: Vector2i) -> void:
+	if not _current_tex or _current_tex_path.is_empty():
+		return
+	var src_img := _current_tex.get_image()
+	var result := _BgRemover.magic_wand_erase(src_img, img_pos.x, img_pos.y, _bg_tolerance)
+	if result == null or result.is_empty():
+		return
+		
+	var base_dir := _current_tex_path.get_base_dir()
+	var base_name := _current_tex_path.get_file().get_basename()
+	var target_path := _current_tex_path
+	if not (base_name.ends_with("_nobg") or base_name.ends_with("_edited")):
+		target_path = base_dir + "/" + base_name + "_edited.png"
+		_current_tex_path = target_path
+		_path_label.text = base_name + "_edited.png"
+		
+	var abs_out := ProjectSettings.globalize_path(target_path)
+	var err := result.save_png(abs_out)
+	if err != OK:
+		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
+		return
+		
+	var new_tex := ImageTexture.create_from_image(result)
+	_current_tex = new_tex
+	_canvas.load_texture(new_tex)
 
 func _on_remove_bg() -> void:
 	if _current_tex_path.is_empty():
@@ -347,13 +458,24 @@ func _on_prop_changed() -> void:
 func _on_name_changed(new_text: String) -> void:
 	if _updating_props:
 		return
-	if _canvas.selected_indices.size() != 1:
+	if _canvas.selected_indices.is_empty():
 		return
-	var idx: int = _canvas.selected_indices[0]
-	if idx < 0 or idx >= _canvas.slice_names.size():
-		return
-	_canvas.slice_names[idx] = new_text
-	_update_list_item(idx)
+	if _canvas.selected_indices.size() == 1:
+		var idx: int = _canvas.selected_indices[0]
+		if idx < 0 or idx >= _canvas.slice_names.size():
+			return
+		_canvas.slice_names[idx] = new_text
+		_update_list_item(idx)
+	else:
+		for i in range(_canvas.selected_indices.size()):
+			var idx: int = _canvas.selected_indices[i]
+			if idx < 0 or idx >= _canvas.slice_names.size():
+				continue
+			if i == 0:
+				_canvas.slice_names[idx] = new_text
+			else:
+				_canvas.slice_names[idx] = new_text + "_" + str(i)
+			_update_list_item(idx)
 
 # --- Helper methods ---
 
@@ -384,22 +506,31 @@ func _sync_list_highlight(indices: Array) -> void:
 			_slice_list.select(idx)
 
 func _update_props() -> void:
-	if _canvas.selected_indices.size() != 1:
-		_props_box.visible = false
-		return
-	var idx: int = _canvas.selected_indices[0]
-	if idx < 0 or idx >= _canvas.rects.size():
+	if _canvas.selected_indices.is_empty():
 		_props_box.visible = false
 		return
 	_props_box.visible = true
 	_updating_props = true
-	var r: Rect2 = _canvas.rects[idx]
-	var cname = ""
-	if idx < _canvas.slice_names.size():
-		cname = _canvas.slice_names[idx]
-	_name_edit.text = cname
-	_spin_x.value = r.position.x
-	_spin_y.value = r.position.y
-	_spin_w.value = r.size.x
-	_spin_h.value = r.size.y
+	
+	if _canvas.selected_indices.size() == 1:
+		var idx: int = _canvas.selected_indices[0]
+		if idx < 0 or idx >= _canvas.rects.size():
+			_props_box.visible = false
+			_updating_props = false
+			return
+		_props_grid.visible = true
+		var r: Rect2 = _canvas.rects[idx]
+		var cname = ""
+		if idx < _canvas.slice_names.size():
+			cname = _canvas.slice_names[idx]
+		_name_edit.text = cname
+		_name_edit.placeholder_text = "Custom Name"
+		_spin_x.value = r.position.x
+		_spin_y.value = r.position.y
+		_spin_w.value = r.size.x
+		_spin_h.value = r.size.y
+	else:
+		_props_grid.visible = false
+		_name_edit.text = ""
+		_name_edit.placeholder_text = "Seq Name (e.g. chest)"
 	_updating_props = false

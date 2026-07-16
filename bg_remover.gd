@@ -214,3 +214,68 @@ static func _dist(a: Color, b: Color) -> float:
 	var dg: float = a.g - b.g
 	var db: float = a.b - b.b
 	return sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
+
+static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance: float) -> Image:
+	var img: Image = image.duplicate()
+	img.convert(Image.FORMAT_RGBA8)
+
+	var W: int = img.get_width()
+	var H: int = img.get_height()
+	if W < 2 or H < 2:
+		return img
+	if start_x < 0 or start_y < 0 or start_x >= W or start_y >= H:
+		return img
+		
+	var bg: Color = img.get_pixel(start_x, start_y)
+	if bg.a < 0.05:
+		return img
+
+	var removed: Array = []
+	removed.resize(W * H)
+	removed.fill(false)
+	
+	var visited: Array = []
+	visited.resize(W * H)
+	visited.fill(false)
+
+	var queue: Array = []
+	var head: int = 0
+	
+	_try_seed(queue, visited, img, start_x, start_y, bg, tolerance, W)
+
+	while head < queue.size():
+		var p: Vector2i = queue[head]
+		head += 1
+		removed[p.y * W + p.x] = true
+
+		var nx: int = p.x - 1
+		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		nx = p.x + 1
+		if nx < W: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		var ny: int = p.y - 1
+		if ny >= 0: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+		ny = p.y + 1
+		if ny < H: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+
+	for y in range(H):
+		for x in range(W):
+			if removed[y * W + x]:
+				img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
+
+	return img
+
+static func brush_erase(image: Image, center_x: int, center_y: int, radius: int) -> Image:
+	var img := image.duplicate()
+	img.convert(Image.FORMAT_RGBA8)
+	var W: int = img.get_width()
+	var H: int = img.get_height()
+	
+	for y in range(max(0, center_y - radius), min(H, center_y + radius + 1)):
+		for x in range(max(0, center_x - radius), min(W, center_x + radius + 1)):
+			var dx := x - center_x
+			var dy := y - center_y
+			if dx*dx + dy*dy <= radius*radius:
+				img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
+	return img
+
+

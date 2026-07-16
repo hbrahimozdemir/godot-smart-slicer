@@ -4,12 +4,18 @@ extends Control
 signal selection_changed(indices: Array)
 signal rects_changed()
 signal zoom_changed(new_zoom: float)
+signal erase_clicked(img_pos: Vector2i)
+signal brush_erase_clicked(img_pos: Vector2i)
+signal brush_erase_dragged(img_pos: Vector2i)
 
 var texture: Texture2D = null
 var rects: Array[Rect2] = []
 var slice_names: Array[String] = []
 var selected_indices: Array = []
 var zoom: float = 1.0
+var erase_mode: bool = false
+var brush_erase_mode: bool = false
+var _brush_erasing: bool = false
 
 # Drag/Create state
 var _dragging: bool = false
@@ -28,6 +34,10 @@ var _right_dragged: bool = false
 var _selecting: bool = false
 var _select_p1: Vector2 = Vector2.ZERO
 var _select_p2: Vector2 = Vector2.ZERO
+
+var _panning: bool = false
+var _pan_start_mouse: Vector2 = Vector2.ZERO
+var _pan_start_scroll: Vector2 = Vector2.ZERO
 
 const HANDLE_R: float = 5.0
 
@@ -184,6 +194,18 @@ func _gui_input(event: InputEvent) -> void:
 			accept_event()
 			return
 
+		if event.button_index == MOUSE_BUTTON_MIDDLE:
+			if event.pressed:
+				_panning = true
+				_pan_start_mouse = get_viewport().get_mouse_position()
+				var parent = get_parent()
+				if parent is ScrollContainer:
+					_pan_start_scroll = Vector2(parent.scroll_horizontal, parent.scroll_vertical)
+			else:
+				_panning = false
+			accept_event()
+			return
+
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			if event.pressed:
 				_on_lmb_down(event.position)
@@ -201,6 +223,16 @@ func _gui_input(event: InputEvent) -> void:
 			return
 
 	elif event is InputEventMouseMotion:
+		if _panning:
+			var curr_mouse = get_viewport().get_mouse_position()
+			var diff = curr_mouse - _pan_start_mouse
+			var parent = get_parent()
+			if parent is ScrollContainer:
+				parent.scroll_horizontal = int(_pan_start_scroll.x - diff.x)
+				parent.scroll_vertical = int(_pan_start_scroll.y - diff.y)
+			accept_event()
+			return
+
 		_on_mouse_motion(event.position)
 		if _dragging or _selecting:
 			accept_event()
@@ -221,6 +253,16 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 
 func _on_lmb_down(pos: Vector2) -> void:
+	if erase_mode:
+		var img_p = _img(pos)
+		erase_clicked.emit(Vector2i(img_p))
+		return
+		
+	if brush_erase_mode:
+		_brush_erasing = true
+		brush_erase_clicked.emit(Vector2i(_img(pos)))
+		return
+		
 	# 1. Check handles (only when exactly one slice is selected)
 	var handle: String = _handle_at(pos)
 	if handle != "" and selected_indices.size() == 1:
@@ -261,6 +303,10 @@ func _on_lmb_down(pos: Vector2) -> void:
 	queue_redraw()
 
 func _on_lmb_up(pos: Vector2) -> void:
+	if _brush_erasing:
+		_brush_erasing = false
+		return
+		
 	if _selecting:
 		_selecting = false
 		var sel_rect := Rect2(_select_p1, _select_p2 - _select_p1).abs()
@@ -321,6 +367,10 @@ func _on_rmb_up(pos: Vector2) -> void:
 		queue_redraw()
 
 func _on_mouse_motion(pos: Vector2) -> void:
+	if _brush_erasing:
+		brush_erase_dragged.emit(Vector2i(_img(pos)))
+		return
+		
 	if _selecting:
 		_select_p2 = _img(pos)
 		queue_redraw()
