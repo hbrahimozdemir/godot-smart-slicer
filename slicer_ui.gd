@@ -12,6 +12,7 @@ var _canvas
 var _path_label:  LineEdit
 var _count_label: Label
 var _slice_list:  ItemList
+var _name_edit:   LineEdit
 var _spin_x:      SpinBox
 var _spin_y:      SpinBox
 var _spin_w:      SpinBox
@@ -171,6 +172,11 @@ func _make_right_panel() -> PanelContainer:
 	props_title.text = "Selected Slice"
 	_props_box.add_child(props_title)
 
+	_name_edit = LineEdit.new()
+	_name_edit.placeholder_text = "Custom Name"
+	_name_edit.text_changed.connect(_on_name_changed)
+	_props_box.add_child(_name_edit)
+
 	var grid := GridContainer.new()
 	grid.columns = 2
 	grid.add_theme_constant_override("h_separation", 4)
@@ -254,7 +260,7 @@ func _on_extract() -> void:
 		return
 	_Extractor.extract(_current_tex, _canvas.rects,
 		"png" if _format_opt.selected == 0 else "tres",
-		_current_tex_path)
+		_current_tex_path, _canvas.slice_names)
 
 func _on_remove_bg() -> void:
 	if _current_tex_path.is_empty():
@@ -338,6 +344,17 @@ func _on_prop_changed() -> void:
 	_canvas.queue_redraw()
 	_update_list_item(idx)
 
+func _on_name_changed(new_text: String) -> void:
+	if _updating_props:
+		return
+	if _canvas.selected_indices.size() != 1:
+		return
+	var idx: int = _canvas.selected_indices[0]
+	if idx < 0 or idx >= _canvas.slice_names.size():
+		return
+	_canvas.slice_names[idx] = new_text
+	_update_list_item(idx)
+
 # --- Helper methods ---
 
 func _refresh_list() -> void:
@@ -352,7 +369,10 @@ func _update_list_item(idx: int) -> void:
 
 func _item_text(i: int) -> String:
 	var r: Rect2 = _canvas.rects[i]
-	return "Slice %d  (%d,%d)  %dx%d" % [i,
+	var custom_name = ""
+	if i < _canvas.slice_names.size() and _canvas.slice_names[i] != "":
+		custom_name = "[" + _canvas.slice_names[i] + "] "
+	return "%sSlice %d  (%d,%d)  %dx%d" % [custom_name, i,
 		int(r.position.x), int(r.position.y),
 		int(r.size.x),     int(r.size.y)]
 
@@ -374,6 +394,10 @@ func _update_props() -> void:
 	_props_box.visible = true
 	_updating_props = true
 	var r: Rect2 = _canvas.rects[idx]
+	var cname = ""
+	if idx < _canvas.slice_names.size():
+		cname = _canvas.slice_names[idx]
+	_name_edit.text = cname
 	_spin_x.value = r.position.x
 	_spin_y.value = r.position.y
 	_spin_w.value = r.size.x

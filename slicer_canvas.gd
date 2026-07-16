@@ -7,6 +7,7 @@ signal zoom_changed(new_zoom: float)
 
 var texture: Texture2D = null
 var rects: Array[Rect2] = []
+var slice_names: Array[String] = []
 var selected_indices: Array = []
 var zoom: float = 1.0
 
@@ -35,12 +36,16 @@ const HANDLE_R: float = 5.0
 func load_texture(tex: Texture2D) -> void:
 	texture = tex
 	rects.clear()
+	slice_names.clear()
 	selected_indices.clear()
 	_update_min_size()
 	queue_redraw()
 
 func set_rects(new_rects: Array[Rect2]) -> void:
 	rects = new_rects.duplicate()
+	slice_names.clear()
+	for i in range(rects.size()):
+		slice_names.append("")
 	selected_indices.clear()
 	queue_redraw()
 
@@ -308,6 +313,7 @@ func _on_rmb_up(pos: Vector2) -> void:
 			var new_rect := Rect2(_create_p1, _create_p2 - _create_p1).abs()
 			if new_rect.size.x >= 2 and new_rect.size.y >= 2:
 				rects.append(new_rect)
+				slice_names.append("")
 				selected_indices = [rects.size() - 1]
 				selection_changed.emit(selected_indices)
 				rects_changed.emit()
@@ -364,6 +370,7 @@ func _on_mouse_motion(pos: Vector2) -> void:
 
 func _delete_rect(idx: int) -> void:
 	rects.remove_at(idx)
+	slice_names.remove_at(idx)
 	selected_indices.erase(idx)
 	# Shift remaining indices down
 	for i in range(selected_indices.size()):
@@ -379,6 +386,7 @@ func _delete_selected_rects() -> void:
 	to_delete.reverse() # Delete from back to prevent index shifts
 	for idx in to_delete:
 		rects.remove_at(idx)
+		slice_names.remove_at(idx)
 	selected_indices.clear()
 	selection_changed.emit(selected_indices)
 	rects_changed.emit()
