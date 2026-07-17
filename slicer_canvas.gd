@@ -46,6 +46,9 @@ var _pan_start_scroll: Vector2 = Vector2.ZERO
 
 const HANDLE_R: float = 5.0
 
+func _ready() -> void:
+	focus_mode = FOCUS_CLICK
+
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_MOUSE_EXIT:
 		is_hovering = false
@@ -254,18 +257,109 @@ func _gui_input(event: InputEvent) -> void:
 func _input(event: InputEvent) -> void:
 	if not visible or not texture:
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
+	if event is InputEventKey and event.pressed:
+		var key_event := event as InputEventKey
 		var focus_owner: Control = get_viewport().gui_get_focus_owner()
 		if focus_owner is LineEdit or focus_owner is TextEdit:
 			return # Do not intercept text editing (like SpinBoxes)
 
 		var is_mac: bool = OS.get_name() == "macOS"
-		var is_delete: bool = event.keycode == KEY_DELETE or (is_mac and event.keycode == KEY_BACKSPACE)
-		if is_delete and not selected_indices.is_empty():
-			_delete_selected_rects()
+		var is_ctrl: bool = key_event.ctrl_pressed or (is_mac and key_event.meta_pressed)
+
+		# 1. Non-echo shortcuts (ignore echo)
+		if not key_event.echo:
+			# Delete selected
+			var is_delete: bool = key_event.keycode == KEY_DELETE or (is_mac and key_event.keycode == KEY_BACKSPACE)
+			if is_delete and not selected_indices.is_empty():
+				_delete_selected_rects()
+				get_viewport().set_input_as_handled()
+				return
+
+			# Duplicate selected (Ctrl + D)
+			if is_ctrl and key_event.keycode == KEY_D and not selected_indices.is_empty():
+				_duplicate_selected_rects()
+				get_viewport().set_input_as_handled()
+				return
+
+			# Select All (Ctrl + A)
+			if is_ctrl and key_event.keycode == KEY_A and not rects.is_empty():
+				selected_indices.clear()
+				for i in range(rects.size()):
+					selected_indices.append(i)
+				selection_changed.emit(selected_indices)
+				queue_redraw()
+				get_viewport().set_input_as_handled()
+				return
+
+			# Deselect All (Escape)
+			if key_event.keycode == KEY_ESCAPE:
+				if not selected_indices.is_empty():
+					selected_indices.clear()
+					selection_changed.emit(selected_indices)
+					queue_redraw()
+					get_viewport().set_input_as_handled()
+					return
+
+		# 2. Echo-allowed shortcuts (nudge and resize using Arrow keys)
+		var is_arrow: bool = key_event.keycode in [KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN]
+		if is_arrow and not selected_indices.is_empty():
+			# Do not nudge if another control like ItemList or OptionButton is focused
+			if focus_owner is ItemList or focus_owner is OptionButton:
+				return
+
+			var shift_pressed: bool = key_event.shift_pressed
+			var nudge_amount := 8 if shift_pressed else 1
+			
+			var move_dir := Vector2.ZERO
+			match key_event.keycode:
+				KEY_LEFT: move_dir.x = -1
+				KEY_RIGHT: move_dir.x = 1
+				KEY_UP: move_dir.y = -1
+				KEY_DOWN: move_dir.y = 1
+				
+			var tex_w := texture.get_width()
+			var tex_h := texture.get_height()
+			
+			if key_event.alt_pressed:
+				# Resize mode
+				for idx in selected_indices:
+					var r := rects[idx]
+					var new_size := r.size + move_dir * nudge_amount
+					# Clamp size
+					if new_size.x < 2:
+						new_size.x = 2
+					if new_size.y < 2:
+						new_size.y = 2
+					# Clamp to texture bounds
+					if r.position.x + new_size.x > tex_w:
+						new_size.x = tex_w - r.position.x
+					if r.position.y + new_size.y > tex_h:
+						new_size.y = tex_h - r.position.y
+						
+					rects[idx] = Rect2(r.position, new_size)
+			else:
+				# Move mode
+				for idx in selected_indices:
+					var r := rects[idx]
+					var new_pos := r.position + move_dir * nudge_amount
+					# Clamp to texture bounds
+					if new_pos.x + r.size.x > tex_w:
+						new_pos.x = tex_w - r.size.x
+					if new_pos.y + r.size.y > tex_h:
+						new_pos.y = tex_h - r.size.y
+					if new_pos.x < 0:
+						new_pos.x = 0
+					if new_pos.y < 0:
+						new_pos.y = 0
+						
+					rects[idx] = Rect2(new_pos, r.size)
+					
+			rects_changed.emit()
+			queue_redraw()
 			get_viewport().set_input_as_handled()
 
 func _on_lmb_down(pos: Vector2) -> void:
+	grab_focus()
 	if erase_mode:
 		var img_p = _img(pos)
 		erase_clicked.emit(Vector2i(img_p))
@@ -352,6 +446,7 @@ func _on_lmb_up(pos: Vector2) -> void:
 		_drag_start_rects.clear()
 
 func _on_rmb_down(pos: Vector2) -> void:
+	grab_focus()
 	_right_click_down_pos = pos
 	_right_dragged = false
 	
@@ -457,6 +552,44 @@ func _delete_selected_rects() -> void:
 		rects.remove_at(idx)
 		slice_names.remove_at(idx)
 	selected_indices.clear()
+	selection_changed.emit(selected_indices)
+	rects_changed.emit()
+	queue_redraw()
+
+func _duplicate_selected_rects() -> void:
+	if selected_indices.is_empty():
+		return
+	
+	var offset := Vector2(8, 8)
+	var tex_w := texture.get_width()
+	var tex_h := texture.get_height()
+	
+	var new_selected_indices: Array = []
+	for idx in selected_indices:
+		var orig_rect = rects[idx]
+		var orig_name = slice_names[idx]
+		
+		# Offset and clamp within texture boundaries
+		var new_pos = orig_rect.position + offset
+		if new_pos.x + orig_rect.size.x > tex_w:
+			new_pos.x = tex_w - orig_rect.size.x
+		if new_pos.y + orig_rect.size.y > tex_h:
+			new_pos.y = tex_h - orig_rect.size.y
+		if new_pos.x < 0:
+			new_pos.x = 0
+		if new_pos.y < 0:
+			new_pos.y = 0
+			
+		var new_rect = Rect2(new_pos, orig_rect.size)
+		var new_name = orig_name
+		if new_name != "":
+			new_name = new_name + "_copy"
+		
+		rects.append(new_rect)
+		slice_names.append(new_name)
+		new_selected_indices.append(rects.size() - 1)
+		
+	selected_indices = new_selected_indices
 	selection_changed.emit(selected_indices)
 	rects_changed.emit()
 	queue_redraw()

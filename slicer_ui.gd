@@ -8,7 +8,7 @@ const _CanvasScript = preload("res://addons/sprite_slicer/slicer_canvas.gd")
 const _BgRemover    = preload("res://addons/sprite_slicer/bg_remover.gd")
 
 # UI References
-var _canvas
+var _canvas: _CanvasScript
 var _path_label:  LineEdit
 var _count_label: Label
 var _slice_list:  ItemList
@@ -37,9 +37,36 @@ var _bg_tolerance:     float   = 0.18
 var _undo_stack: Array[Image] = []
 var _brush_size_spin: SpinBox
 
+# Grid Dialog UI
+var _grid_dialog: ConfirmationDialog
+var _grid_spin_w: SpinBox
+var _grid_spin_h: SpinBox
+var _grid_spin_off_x: SpinBox
+var _grid_spin_off_y: SpinBox
+var _grid_spin_sep_x: SpinBox
+var _grid_spin_sep_y: SpinBox
+var _grid_chk_keep_empty: CheckBox
+
+# Preview Player State
+var _preview_playing: bool = false
+var _preview_fps: float = 8.0
+var _preview_frame_time: float = 0.0
+var _preview_frame_idx: int = 0
+var _preview_indices: Array = []
+var _preview_atlas: AtlasTexture
+
+# UI references for Preview Player
+var _preview_rect: TextureRect
+var _preview_play_btn: Button
+var _preview_fps_spin: SpinBox
+var _preview_label: Label
+
+
+
 func _ready() -> void:
 	_build_ui()
 	_setup_file_dialog()
+	_setup_grid_dialog()
 
 # --- UI Construction ---
 
@@ -113,6 +140,14 @@ func _make_toolbar() -> HBoxContainer:
 	auto_btn.text = "Auto Slice"
 	auto_btn.pressed.connect(_on_auto_slice)
 	tb.add_child(auto_btn)
+
+	var grid_btn := Button.new()
+	grid_btn.text = "Grid Slice..."
+	grid_btn.pressed.connect(func():
+		if _grid_dialog:
+			_grid_dialog.popup_centered()
+	)
+	tb.add_child(grid_btn)
 
 	var clear_btn := Button.new()
 	clear_btn.text = "Clear"
@@ -258,6 +293,9 @@ func _make_right_panel() -> PanelContainer:
 	_chk_spriteframes.button_pressed = false
 	vbox.add_child(_chk_spriteframes)
 
+	vbox.add_child(HSeparator.new())
+	vbox.add_child(_make_preview_panel())
+
 	return panel
 
 func _make_spin(lbl_text: String, parent: Control) -> SpinBox:
@@ -285,6 +323,107 @@ func _setup_file_dialog() -> void:
 	_file_dialog.file_selected.connect(_load_texture)
 	add_child(_file_dialog)
 
+func _setup_grid_dialog() -> void:
+	_grid_dialog = ConfirmationDialog.new()
+	_grid_dialog.title = "Grid Slice Settings"
+	
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 10)
+	grid.add_theme_constant_override("v_separation", 8)
+	
+	# Cell Width
+	var lbl_w := Label.new()
+	lbl_w.text = "Cell Width:"
+	grid.add_child(lbl_w)
+	_grid_spin_w = SpinBox.new()
+	_grid_spin_w.min_value = 1
+	_grid_spin_w.max_value = 8192
+	_grid_spin_w.value = 32
+	grid.add_child(_grid_spin_w)
+	
+	# Cell Height
+	var lbl_h := Label.new()
+	lbl_h.text = "Cell Height:"
+	grid.add_child(lbl_h)
+	_grid_spin_h = SpinBox.new()
+	_grid_spin_h.min_value = 1
+	_grid_spin_h.max_value = 8192
+	_grid_spin_h.value = 32
+	grid.add_child(_grid_spin_h)
+	
+	# Offset X
+	var lbl_off_x := Label.new()
+	lbl_off_x.text = "Offset X:"
+	grid.add_child(lbl_off_x)
+	_grid_spin_off_x = SpinBox.new()
+	_grid_spin_off_x.min_value = 0
+	_grid_spin_off_x.max_value = 8192
+	_grid_spin_off_x.value = 0
+	grid.add_child(_grid_spin_off_x)
+	
+	# Offset Y
+	var lbl_off_y := Label.new()
+	lbl_off_y.text = "Offset Y:"
+	grid.add_child(lbl_off_y)
+	_grid_spin_off_y = SpinBox.new()
+	_grid_spin_off_y.min_value = 0
+	_grid_spin_off_y.max_value = 8192
+	_grid_spin_off_y.value = 0
+	grid.add_child(_grid_spin_off_y)
+	
+	# Padding/Separation X
+	var lbl_sep_x := Label.new()
+	lbl_sep_x.text = "Separation X:"
+	grid.add_child(lbl_sep_x)
+	_grid_spin_sep_x = SpinBox.new()
+	_grid_spin_sep_x.min_value = 0
+	_grid_spin_sep_x.max_value = 1024
+	_grid_spin_sep_x.value = 0
+	grid.add_child(_grid_spin_sep_x)
+	
+	# Padding/Separation Y
+	var lbl_sep_y := Label.new()
+	lbl_sep_y.text = "Separation Y:"
+	grid.add_child(lbl_sep_y)
+	_grid_spin_sep_y = SpinBox.new()
+	_grid_spin_sep_y.min_value = 0
+	_grid_spin_sep_y.max_value = 1024
+	_grid_spin_sep_y.value = 0
+	grid.add_child(_grid_spin_sep_y)
+	
+	# Keep Empty
+	var lbl_keep := Label.new()
+	lbl_keep.text = "Keep Empty Slices:"
+	grid.add_child(lbl_keep)
+	_grid_chk_keep_empty = CheckBox.new()
+	_grid_chk_keep_empty.button_pressed = false
+	grid.add_child(_grid_chk_keep_empty)
+	
+	_grid_dialog.add_child(grid)
+	_grid_dialog.confirmed.connect(_on_grid_slice_confirmed)
+	add_child(_grid_dialog)
+
+func _on_grid_slice_confirmed() -> void:
+	if not _current_tex:
+		return
+	var img := _current_tex.get_image()
+	if not img or img.is_empty():
+		return
+	var cell_w := int(_grid_spin_w.value)
+	var cell_h := int(_grid_spin_h.value)
+	var off_x := int(_grid_spin_off_x.value)
+	var off_y := int(_grid_spin_off_y.value)
+	var sep_x := int(_grid_spin_sep_x.value)
+	var sep_y := int(_grid_spin_sep_y.value)
+	var keep_empty := _grid_chk_keep_empty.button_pressed
+	
+	var rects := _AutoSlicer.slice_grid(img, cell_w, cell_h, off_x, off_y, sep_x, sep_y, keep_empty)
+	_canvas.set_rects(rects)
+	_refresh_list()
+	_update_props()
+	_update_preview_indices()
+
 func _on_browse() -> void:
 	if _file_dialog:
 		_file_dialog.popup_centered_ratio(0.6)
@@ -303,6 +442,7 @@ func _load_texture(path: String) -> void:
 	_canvas.set_zoom(1.0)
 	_refresh_list()
 	_update_props()
+	_update_preview_indices()
 
 func _on_auto_slice() -> void:
 	if not _current_tex:
@@ -310,6 +450,7 @@ func _on_auto_slice() -> void:
 	_canvas.set_rects(_AutoSlicer.slice(_current_tex.get_image()))
 	_refresh_list()
 	_update_props()
+	_update_preview_indices()
 
 func _on_clear() -> void:
 	_canvas.rects.clear()
@@ -317,6 +458,7 @@ func _on_clear() -> void:
 	_canvas.queue_redraw()
 	_refresh_list()
 	_update_props()
+	_update_preview_indices()
 
 func _on_extract() -> void:
 	if not _current_tex or _canvas.rects.is_empty():
@@ -438,6 +580,7 @@ func _on_remove_bg() -> void:
 	_canvas.selected_indices.clear()
 	_refresh_list()
 	_update_props()
+	_update_preview_indices()
 
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().scan()
@@ -459,10 +602,12 @@ func _on_canvas_zoom_changed(z: float) -> void:
 func _on_canvas_selection_changed(indices: Array) -> void:
 	_sync_list_highlight(indices)
 	_update_props()
+	_update_preview_indices()
 
 func _on_rects_changed() -> void:
 	_refresh_list()
 	_update_props()
+	_update_preview_indices()
 
 func _on_list_item_selected(_index: int) -> void:
 	var selected: PackedInt32Array = _slice_list.get_selected_items()
@@ -472,6 +617,7 @@ func _on_list_item_selected(_index: int) -> void:
 	_canvas.selected_indices = canvas_selected
 	_canvas.queue_redraw()
 	_update_props()
+	_update_preview_indices()
 
 func _on_prop_changed() -> void:
 	if _updating_props:
@@ -485,6 +631,18 @@ func _on_prop_changed() -> void:
 	_canvas.queue_redraw()
 	_update_list_item(idx)
 
+func _sort_indices_spatially(indices: Array) -> Array:
+	var sorted := indices.duplicate()
+	sorted.sort_custom(func(a_idx: int, b_idx: int) -> bool:
+		var a_rect: Rect2 = _canvas.rects[a_idx]
+		var b_rect: Rect2 = _canvas.rects[b_idx]
+		var y_diff := abs(a_rect.position.y - b_rect.position.y)
+		if y_diff < 12.0:
+			return a_rect.position.x < b_rect.position.x
+		return a_rect.position.y < b_rect.position.y
+	)
+	return sorted
+
 func _on_name_changed(new_text: String) -> void:
 	if _updating_props:
 		return
@@ -497,15 +655,24 @@ func _on_name_changed(new_text: String) -> void:
 		_canvas.slice_names[idx] = new_text
 		_update_list_item(idx)
 	else:
-		for i in range(_canvas.selected_indices.size()):
-			var idx: int = _canvas.selected_indices[i]
+		var sorted_sel := _sort_indices_spatially(_canvas.selected_indices)
+		var num_selected := sorted_sel.size()
+		var pad_len := 1
+		if num_selected >= 100:
+			pad_len = 3
+		elif num_selected >= 10:
+			pad_len = 2
+
+		for i in range(num_selected):
+			var idx: int = sorted_sel[i]
 			if idx < 0 or idx >= _canvas.slice_names.size():
 				continue
-			if i == 0:
-				_canvas.slice_names[idx] = new_text
-			else:
-				_canvas.slice_names[idx] = new_text + "_" + str(i)
+			var suffix := str(i)
+			while suffix.length() < pad_len:
+				suffix = "0" + suffix
+			_canvas.slice_names[idx] = new_text + "_" + suffix
 			_update_list_item(idx)
+
 
 # --- Helper methods ---
 
@@ -600,3 +767,104 @@ func _undo() -> void:
 	var new_tex := ImageTexture.create_from_image(prev_img)
 	_current_tex = new_tex
 	_canvas.load_texture(new_tex)
+
+func _process(delta: float) -> void:
+	if not _preview_playing or _preview_indices.is_empty():
+		return
+	_preview_frame_time += delta
+	var interval: float = 1.0 / max(1.0, _preview_fps)
+	if _preview_frame_time >= interval:
+		_preview_frame_time = 0.0
+		_preview_frame_idx = (_preview_frame_idx + 1) % _preview_indices.size()
+		_update_preview_texture()
+
+func _make_preview_panel() -> VBoxContainer:
+	var container := VBoxContainer.new()
+	container.add_theme_constant_override("separation", 4)
+	
+	var title := Label.new()
+	title.text = "Animation Preview"
+	container.add_child(title)
+	
+	var bg_panel := PanelContainer.new()
+	bg_panel.custom_minimum_size = Vector2(0, 120)
+	bg_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bg_panel.size_flags_vertical = Control.SIZE_FILL
+	container.add_child(bg_panel)
+	
+	_preview_rect = TextureRect.new()
+	_preview_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_preview_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_preview_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_preview_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	bg_panel.add_child(_preview_rect)
+	
+	_preview_atlas = AtlasTexture.new()
+	_preview_rect.texture = _preview_atlas
+	
+	var controls := HBoxContainer.new()
+	controls.add_theme_constant_override("separation", 5)
+	container.add_child(controls)
+	
+	_preview_play_btn = Button.new()
+	_preview_play_btn.text = "Play"
+	_preview_play_btn.pressed.connect(_on_preview_play_pressed)
+	controls.add_child(_preview_play_btn)
+	
+	var fps_lbl := Label.new()
+	fps_lbl.text = "FPS:"
+	controls.add_child(fps_lbl)
+	
+	_preview_fps_spin = SpinBox.new()
+	_preview_fps_spin.min_value = 1
+	_preview_fps_spin.max_value = 60
+	_preview_fps_spin.value = 8
+	_preview_fps_spin.step = 1
+	_preview_fps_spin.custom_minimum_size = Vector2(55, 0)
+	_preview_fps_spin.value_changed.connect(func(v: float): _preview_fps = v)
+	controls.add_child(_preview_fps_spin)
+	
+	_preview_label = Label.new()
+	_preview_label.text = "Frame: -"
+	_preview_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_preview_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	controls.add_child(_preview_label)
+	
+	return container
+
+func _on_preview_play_pressed() -> void:
+	_preview_playing = !_preview_playing
+	_preview_play_btn.text = "Pause" if _preview_playing else "Play"
+	if _preview_playing:
+		_update_preview_indices()
+
+func _update_preview_indices() -> void:
+	if not _canvas:
+		return
+	var selected: Array = _canvas.selected_indices.duplicate()
+	if selected.is_empty():
+		_preview_indices = []
+		for i in range(_canvas.rects.size()):
+			_preview_indices.append(i)
+	else:
+		_preview_indices = _sort_indices_spatially(selected)
+	
+	if _preview_frame_idx >= _preview_indices.size():
+		_preview_frame_idx = 0
+	
+	_update_preview_texture()
+
+func _update_preview_texture() -> void:
+	if not _current_tex or _preview_indices.is_empty():
+		_preview_atlas.atlas = null
+		_preview_label.text = "Frame: -"
+		return
+		
+	var idx: int = _preview_indices[_preview_frame_idx]
+	if idx < 0 or idx >= _canvas.rects.size():
+		return
+		
+	var r: Rect2 = _canvas.rects[idx]
+	_preview_atlas.atlas = _current_tex
+	_preview_atlas.region = r
+	_preview_label.text = "Frame: %d" % idx

@@ -68,3 +68,39 @@ static func _flood_fill(image: Image, start_x: int, start_y: int, width: int, he
 				queue.append(Vector2i(x, y + 1))
 
 	return Rect2(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)
+
+static func slice_grid(image: Image, cell_w: int, cell_h: int, off_x: int, off_y: int, sep_x: int, sep_y: int, keep_empty: bool = false, alpha_threshold: float = 0.05) -> Array[Rect2]:
+	var rects: Array[Rect2] = []
+	if not image:
+		return rects
+
+	var W: int = image.get_width()
+	var H: int = image.get_height()
+
+	for y in range(off_y, H - cell_h + 1, cell_h + sep_y):
+		for x in range(off_x, W - cell_w + 1, cell_w + sep_x):
+			var r := Rect2(x, y, cell_w, cell_h)
+			if keep_empty or not _is_region_transparent(image, r, alpha_threshold):
+				rects.append(r)
+
+	return rects
+
+static func _is_region_transparent(image: Image, r: Rect2, threshold: float) -> bool:
+	var x_start: int = int(r.position.x)
+	var y_start: int = int(r.position.y)
+	var x_end: int = x_start + int(r.size.x)
+	var y_end: int = y_start + int(r.size.y)
+	
+	var W: int = image.get_width()
+	var H: int = image.get_height()
+	x_start = clamp(x_start, 0, W)
+	y_start = clamp(y_start, 0, H)
+	x_end = clamp(x_end, 0, W)
+	y_end = clamp(y_end, 0, H)
+
+	for py in range(y_start, y_end):
+		for px in range(x_start, x_end):
+			if image.get_pixel(px, py).a > threshold:
+				return false
+	return true
+
