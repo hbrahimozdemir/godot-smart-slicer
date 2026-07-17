@@ -7,6 +7,7 @@ signal zoom_changed(new_zoom: float)
 signal erase_clicked(img_pos: Vector2i)
 signal brush_erase_clicked(img_pos: Vector2i)
 signal brush_erase_dragged(img_pos: Vector2i)
+signal brush_erase_released()
 
 var texture: Texture2D = null
 var rects: Array[Rect2] = []
@@ -16,6 +17,10 @@ var zoom: float = 1.0
 var erase_mode: bool = false
 var brush_erase_mode: bool = false
 var _brush_erasing: bool = false
+
+var brush_size: int = 8
+var hover_mouse_pos: Vector2 = Vector2.ZERO
+var is_hovering: bool = false
 
 # Drag/Create state
 var _dragging: bool = false
@@ -41,7 +46,10 @@ var _pan_start_scroll: Vector2 = Vector2.ZERO
 
 const HANDLE_R: float = 5.0
 
-# --- Public API ---
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_MOUSE_EXIT:
+		is_hovering = false
+		queue_redraw()
 
 func load_texture(tex: Texture2D) -> void:
 	texture = tex
@@ -149,6 +157,11 @@ func _draw() -> void:
 		draw_rect(sr, Color(1.0, 1.0, 1.0, 0.08), true)
 		# Draw dashed/fine outline
 		draw_rect(sr, Color(1.0, 1.0, 1.0, 0.6), false, 1.0)
+		
+	# Brush hover indicator
+	if brush_erase_mode and is_hovering:
+		var rad = float(brush_size) * zoom
+		draw_arc(hover_mouse_pos, rad, 0.0, TAU, 32, Color(1.0, 0.3, 0.3, 0.75), 1.5)
 
 func _draw_slice(i: int) -> void:
 	var sr: Rect2 = _s(rects[i])
@@ -305,6 +318,7 @@ func _on_lmb_down(pos: Vector2) -> void:
 func _on_lmb_up(pos: Vector2) -> void:
 	if _brush_erasing:
 		_brush_erasing = false
+		brush_erase_released.emit()
 		return
 		
 	if _selecting:
@@ -367,6 +381,11 @@ func _on_rmb_up(pos: Vector2) -> void:
 		queue_redraw()
 
 func _on_mouse_motion(pos: Vector2) -> void:
+	if brush_erase_mode:
+		hover_mouse_pos = pos
+		is_hovering = true
+		queue_redraw()
+
 	if _brush_erasing:
 		brush_erase_dragged.emit(Vector2i(_img(pos)))
 		return

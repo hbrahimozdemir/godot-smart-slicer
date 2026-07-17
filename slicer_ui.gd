@@ -34,6 +34,8 @@ var _current_tex_path: String  = ""
 var _zoom:             float   = 1.0
 var _updating_props:   bool    = false
 var _bg_tolerance:     float   = 0.18
+var _undo_stack: Array[Image] = []
+var _brush_size_spin: SpinBox
 
 func _ready() -> void:
 	_build_ui()
@@ -62,6 +64,7 @@ func _build_ui() -> void:
 	_canvas.erase_clicked.connect(_on_erase_clicked)
 	_canvas.brush_erase_clicked.connect(_on_brush_erase_clicked)
 	_canvas.brush_erase_dragged.connect(_on_brush_erase_dragged)
+	_canvas.brush_erase_released.connect(_on_brush_erase_released)
 	scroll.add_child(_canvas)
 
 	add_child(_make_right_panel())
@@ -151,6 +154,26 @@ func _make_toolbar() -> HBoxContainer:
 	_brush_erase_btn.tooltip_text = "Click and drag on canvas to erase pixels (Brush style)"
 	_brush_erase_btn.toggled.connect(_on_brush_toggled)
 	tb.add_child(_brush_erase_btn)
+	
+	var brush_size_label := Label.new()
+	brush_size_label.text = "Size:"
+	tb.add_child(brush_size_label)
+	
+	_brush_size_spin = SpinBox.new()
+	_brush_size_spin.min_value = 1
+	_brush_size_spin.max_value = 100
+	_brush_size_spin.value = 8
+	_brush_size_spin.step = 1
+	_brush_size_spin.custom_minimum_size = Vector2(60, 0)
+	_brush_size_spin.tooltip_text = "Brush erase size (radius in pixels)"
+	_brush_size_spin.value_changed.connect(func(val):
+		if _canvas != null:
+			_canvas.brush_size = int(val)
+			_canvas.queue_redraw()
+	)
+	tb.add_child(_brush_size_spin)
+	if _canvas != null:
+		_canvas.brush_size = 8
 
 	var extract_btn := Button.new()
 	extract_btn.text = "Extract All"
@@ -272,6 +295,7 @@ func _load_texture(path: String) -> void:
 	var tex = load(path)
 	if not tex is Texture2D:
 		return
+	_undo_stack.clear()
 	_current_tex      = tex
 	_current_tex_path = path
 	_path_label.text  = path.get_file()
@@ -316,31 +340,35 @@ func _on_brush_toggled(toggled: bool) -> void:
 		_canvas.erase_mode = false
 
 func _on_brush_erase_clicked(img_pos: Vector2i) -> void:
+	_push_undo()
+	if _current_tex and not _current_tex_path.is_empty():
+		var base_dir := _current_tex_path.get_base_dir()
+		var base_name := _current_tex_path.get_file().get_basename()
+		if not (base_name.ends_with("_nobg") or base_name.ends_with("_edited")):
+			_current_tex_path = base_dir + "/" + base_name + "_edited.png"
+			_path_label.text = base_name + "_edited.png"
 	_do_brush_erase(img_pos)
 
 func _on_brush_erase_dragged(img_pos: Vector2i) -> void:
 	_do_brush_erase(img_pos)
 
+func _on_brush_erase_released() -> void:
+	if not _current_tex or _current_tex_path.is_empty():
+		return
+	var abs_out := ProjectSettings.globalize_path(_current_tex_path)
+	var err: Error = _current_tex.get_image().save_png(abs_out)
+	if err != OK:
+		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
+
 func _do_brush_erase(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
 	var src_img := _current_tex.get_image()
-	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, 8)
+	var b_size: int = 8
+	if _brush_size_spin != null:
+		b_size = int(_brush_size_spin.value)
+	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, b_size)
 	if result == null or result.is_empty():
-		return
-		
-	var base_dir := _current_tex_path.get_base_dir()
-	var base_name := _current_tex_path.get_file().get_basename()
-	var target_path := _current_tex_path
-	if not (base_name.ends_with("_nobg") or base_name.ends_with("_edited")):
-		target_path = base_dir + "/" + base_name + "_edited.png"
-		_current_tex_path = target_path
-		_path_label.text = base_name + "_edited.png"
-		
-	var abs_out := ProjectSettings.globalize_path(target_path)
-	var err := result.save_png(abs_out)
-	if err != OK:
-		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
 		return
 		
 	var new_tex := ImageTexture.create_from_image(result)
@@ -350,6 +378,7 @@ func _do_brush_erase(img_pos: Vector2i) -> void:
 func _on_erase_clicked(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
+	_push_undo()
 	var src_img := _current_tex.get_image()
 	var result := _BgRemover.magic_wand_erase(src_img, img_pos.x, img_pos.y, _bg_tolerance)
 	if result == null or result.is_empty():
@@ -377,6 +406,7 @@ func _on_remove_bg() -> void:
 	if _current_tex_path.is_empty():
 		push_error("SpriteSlicer: No texture path available.")
 		return
+	_push_undo()
 
 	var abs_src: String = ProjectSettings.globalize_path(_current_tex_path)
 	var src_img: Image = Image.load_from_file(abs_src)
@@ -534,3 +564,39 @@ func _update_props() -> void:
 		_name_edit.text = ""
 		_name_edit.placeholder_text = "Seq Name (e.g. chest)"
 	_updating_props = false
+
+func _input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event is InputEventKey and event.pressed:
+		if event.keycode == KEY_Z and event.ctrl_pressed:
+			_undo()
+			get_viewport().set_input_as_handled()
+
+func _push_undo() -> void:
+	if _current_tex:
+		var src_img = _current_tex.get_image()
+		if src_img and not src_img.is_empty():
+			var img_copy = Image.new()
+			img_copy.copy_from(src_img)
+			_undo_stack.append(img_copy)
+			if _undo_stack.size() > 20:
+				_undo_stack.remove_at(0)
+
+func _undo() -> void:
+	if _undo_stack.is_empty():
+		return
+		
+	var prev_img = _undo_stack.pop_back()
+	if prev_img == null or prev_img.is_empty():
+		return
+		
+	var abs_out := ProjectSettings.globalize_path(_current_tex_path)
+	var err: Error = prev_img.save_png(abs_out)
+	if err != OK:
+		push_error("SpriteSlicer: Could not save undo PNG back to disk: " + abs_out)
+		return
+		
+	var new_tex := ImageTexture.create_from_image(prev_img)
+	_current_tex = new_tex
+	_canvas.load_texture(new_tex)
