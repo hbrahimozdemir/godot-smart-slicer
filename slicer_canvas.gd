@@ -47,6 +47,9 @@ var is_hovering: bool = false
 var _checker_tex: ImageTexture = null
 var _checker_size: Vector2i = Vector2i.ZERO
 
+var _preview_mask_tex: ImageTexture = null
+var _preview_mask_img: Image = null
+
 # Drag/Create state
 var _dragging: bool = false
 var _drag_mode: String = ""   # "move" | "create" | "tl" | "tr" | "bl" | "br"
@@ -78,6 +81,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_MOUSE_EXIT:
 		is_hovering = false
 		preview_mask.clear()
+		_preview_mask_tex = null
 		last_preview_pixel = Vector2i(-1, -1)
 		queue_redraw()
 
@@ -227,12 +231,9 @@ func _draw() -> void:
 		draw_arc(hover_mouse_pos, rad, 0.0, TAU, 32, col, 1.5)
 
 	# Draw magic wand preview mask
-	if (erase_mode or recolor_mode) and is_hovering and not preview_mask.is_empty():
-		var mask_color := Color(0.3, 0.7, 1.0, 0.4) if erase_mode else paint_color
-		mask_color.a = 0.45
-		var psz := Vector2(zoom, zoom)
-		for p in preview_mask:
-			draw_rect(Rect2(Vector2(p) * zoom, psz), mask_color)
+	if (erase_mode or recolor_mode) and is_hovering and _preview_mask_tex:
+		var overlay_size := Vector2(texture.get_width(), texture.get_height()) * zoom
+		draw_texture_rect(_preview_mask_tex, Rect2(Vector2.ZERO, overlay_size), false)
 
 	# Draw stamp preview
 	if stamp_mode and stamp_tex and is_hovering:
@@ -706,33 +707,33 @@ func _on_mouse_motion(pos: Vector2) -> void:
 func _recalculate_wand_preview(img_p: Vector2i) -> void:
 	preview_mask.clear()
 	if not texture:
+		_preview_mask_tex = null
 		return
 	var img := texture.get_image()
 	if not img or img.is_empty():
+		_preview_mask_tex = null
 		return
 	var W := img.get_width()
 	var H := img.get_height()
 	if img_p.x < 0 or img_p.y < 0 or img_p.x >= W or img_p.y >= H:
+		_preview_mask_tex = null
 		return
 
 	var bg := img.get_pixel(img_p.x, img_p.y)
 	if bg.a < 0.01:
+		_preview_mask_tex = null
 		return
 
 	var visited := {}
 	var queue := [img_p]
 	var head := 0
+	visited[img_p.y * W + img_p.x] = true
 	
 	const MAX_PREVIEW = 8000
 	
 	while head < queue.size() and queue.size() < MAX_PREVIEW:
 		var p: Vector2i = queue[head]
 		head += 1
-		
-		var idx := p.y * W + p.x
-		if idx in visited:
-			continue
-		visited[idx] = true
 		preview_mask.append(p)
 		
 		# 4-way check
@@ -746,6 +747,7 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 			if n.x >= 0 and n.x < W and n.y >= 0 and n.y < H:
 				var n_idx: int = n.y * W + n.x
 				if not n_idx in visited:
+					visited[n_idx] = true
 					var c: Color = img.get_pixel(n.x, n.y)
 					var dr: float = c.r - bg.r
 					var dg: float = c.g - bg.g
@@ -753,6 +755,21 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 					var dist: float = sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
 					if dist <= tolerance:
 						queue.append(n)
+
+	if not preview_mask.is_empty():
+		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color
+		mask_color.a = 0.45
+		
+		_preview_mask_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
+		for p in preview_mask:
+			_preview_mask_img.set_pixel(p.x, p.y, mask_color)
+			
+		if _preview_mask_tex == null:
+			_preview_mask_tex = ImageTexture.create_from_image(_preview_mask_img)
+		else:
+			_preview_mask_tex.update(_preview_mask_img)
+	else:
+		_preview_mask_tex = null
 
 func _delete_rect(idx: int) -> void:
 	rects.remove_at(idx)

@@ -18,9 +18,9 @@ static func remove(image: Image, tolerance: float = 0.18, feather: bool = true) 
 
 	var bg_centers: Array = _edge_kmeans(img, W, H)
 
-	var removed: Array = []
+	var removed := PackedByteArray()
 	removed.resize(W * H)
-	removed.fill(false)
+	removed.fill(0)
 
 	for ci in range(bg_centers.size()):
 		var bg: Color = bg_centers[ci]
@@ -93,14 +93,14 @@ static func _edge_kmeans(img: Image, W: int, H: int) -> Array:
 	return centers
 
 static func _bfs_fill(img: Image, bg: Color, tol: float,
-		W: int, H: int, removed: Array) -> void:
-	var visited: Array = []
+		W: int, H: int, removed: PackedByteArray) -> void:
+	var visited := PackedByteArray()
 	visited.resize(W * H)
-	visited.fill(false)
+	visited.fill(0)
 
 	for i in range(W * H):
-		if removed[i]:
-			visited[i] = true
+		if removed[i] != 0:
+			visited[i] = 1
 
 	var queue: Array = []
 	var head: int = 0
@@ -115,7 +115,7 @@ static func _bfs_fill(img: Image, bg: Color, tol: float,
 	while head < queue.size():
 		var p: Vector2i = queue[head]
 		head += 1
-		removed[p.y * W + p.x] = true
+		removed[p.y * W + p.x] = 1
 
 		var nx: int
 		var ny: int
@@ -133,17 +133,17 @@ static func _bfs_fill(img: Image, bg: Color, tol: float,
 		if ny < H:
 			_try_seed(queue, visited, img, p.x, ny, bg, tol, W)
 
-static func _try_seed(queue: Array, visited: Array, img: Image,
+static func _try_seed(queue: Array, visited: PackedByteArray, img: Image,
 		x: int, y: int, bg: Color, tol: float, W: int) -> void:
 	var idx: int = y * W + x
-	if visited[idx]:
+	if visited[idx] != 0:
 		return
-	visited[idx] = true
+	visited[idx] = 1
 	var c: Color = img.get_pixel(x, y)
 	if c.a < 0.05 or _dist(c, bg) <= tol:
 		queue.append(Vector2i(x, y))
 
-static func _apply_matting(img: Image, removed: Array,
+static func _apply_matting(img: Image, removed: PackedByteArray,
 		W: int, H: int, feather: bool) -> void:
 	for y in range(H):
 		for x in range(W):
@@ -153,29 +153,29 @@ static func _apply_matting(img: Image, removed: Array,
 	if not feather:
 		return
 
-	var dist_map: Array = []
+	var dist_map := PackedFloat32Array()
 	dist_map.resize(W * H)
-	var BIG: int = W + H + 1
+	var BIG: float = float(W + H + 1)
 
 	for y in range(H):
 		for x in range(W):
 			if img.get_pixel(x, y).a < 0.01:
-				dist_map[y * W + x] = 0
+				dist_map[y * W + x] = 0.0
 			else:
 				dist_map[y * W + x] = BIG
 
 	for y in range(H):
 		for x in range(W):
 			var idx: int = y * W + x
-			if dist_map[idx] == 0:
+			if dist_map[idx] == 0.0:
 				continue
-			var best: int = dist_map[idx]
+			var best: float = dist_map[idx]
 			if x > 0:
-				var v: int = dist_map[idx - 1] + 1
+				var v: float = dist_map[idx - 1] + 1.0
 				if v < best:
 					best = v
 			if y > 0:
-				var v: int = dist_map[idx - W] + 1
+				var v: float = dist_map[idx - W] + 1.0
 				if v < best:
 					best = v
 			dist_map[idx] = best
@@ -183,15 +183,15 @@ static func _apply_matting(img: Image, removed: Array,
 	for y in range(H - 1, -1, -1):
 		for x in range(W - 1, -1, -1):
 			var idx: int = y * W + x
-			if dist_map[idx] == 0:
+			if dist_map[idx] == 0.0:
 				continue
-			var best: int = dist_map[idx]
+			var best: float = dist_map[idx]
 			if x < W - 1:
-				var v: int = dist_map[idx + 1] + 1
+				var v: float = dist_map[idx + 1] + 1.0
 				if v < best:
 					best = v
 			if y < H - 1:
-				var v: int = dist_map[idx + W] + 1
+				var v: float = dist_map[idx + W] + 1.0
 				if v < best:
 					best = v
 			dist_map[idx] = best
@@ -202,10 +202,10 @@ static func _apply_matting(img: Image, removed: Array,
 			var c: Color = snapshot.get_pixel(x, y)
 			if c.a < 0.01:
 				continue
-			var d: int = dist_map[y * W + x]
+			var d: float = dist_map[y * W + x]
 			if d > _MAT_RADIUS:
 				continue
-			var t: float = float(d) / float(_MAT_RADIUS)
+			var t: float = d / float(_MAT_RADIUS)
 			var smooth_t: float = t * t * (3.0 - 2.0 * t)
 			img.set_pixel(x, y, Color(c.r, c.g, c.b, c.a * smooth_t))
 
@@ -230,13 +230,13 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 	if bg.a < 0.05:
 		return img
 
-	var removed: Array = []
+	var removed := PackedByteArray()
 	removed.resize(W * H)
-	removed.fill(false)
+	removed.fill(0)
 	
-	var visited: Array = []
+	var visited := PackedByteArray()
 	visited.resize(W * H)
-	visited.fill(false)
+	visited.fill(0)
 
 	var queue: Array = []
 	var head: int = 0
@@ -246,7 +246,7 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 	while head < queue.size():
 		var p: Vector2i = queue[head]
 		head += 1
-		removed[p.y * W + p.x] = true
+		removed[p.y * W + p.x] = 1
 
 		var nx: int = p.x - 1
 		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
@@ -259,7 +259,7 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 
 	for y in range(H):
 		for x in range(W):
-			if removed[y * W + x]:
+			if removed[y * W + x] != 0:
 				img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 
 	return img
@@ -305,13 +305,13 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 	if bg.a < 0.01:
 		return img
 
-	var removed: Array = []
-	removed.resize(W * H)
-	removed.fill(false)
+	var recolored := PackedByteArray()
+	recolored.resize(W * H)
+	recolored.fill(0)
 	
-	var visited: Array = []
+	var visited := PackedByteArray()
 	visited.resize(W * H)
-	visited.fill(false)
+	visited.fill(0)
 
 	var queue: Array = []
 	var head: int = 0
@@ -321,7 +321,7 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 	while head < queue.size():
 		var p: Vector2i = queue[head]
 		head += 1
-		removed[p.y * W + p.x] = true
+		recolored[p.y * W + p.x] = 1
 
 		var nx: int = p.x - 1
 		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
@@ -334,7 +334,7 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 
 	for y in range(H):
 		for x in range(W):
-			if removed[y * W + x]:
+			if recolored[y * W + x] != 0:
 				var original := img.get_pixel(x, y)
 				# Recolor while keeping original pixel's alpha!
 				img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, original.a))
