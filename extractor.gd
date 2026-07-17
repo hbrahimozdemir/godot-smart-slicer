@@ -1,7 +1,7 @@
 @tool
 class_name SpriteExtractor
 
-static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, export_atlas: bool, export_spriteframes: bool, tex_path: String = "", names: Array[String] = [], anim_name: String = "default") -> void:
+static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, export_atlas: bool, export_spriteframes: bool, tex_path: String = "", names: Array[String] = [], anim_name: String = "default", slice_materials: Array[String] = []) -> void:
 	var src_path := tex_path if tex_path != "" else texture.resource_path
 	var base_path := src_path.get_base_dir()
 	var base_name := src_path.get_file().get_basename()
@@ -47,6 +47,42 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 				push_error("SpriteSlicer: Could not save AtlasTexture: %s (error %d)" % [save_path, err])
 			else:
 				print("Saved AtlasTexture: ", save_path)
+
+		# Export custom Godot scene if a shader/material path is assigned to this slice
+		if i < slice_materials.size() and slice_materials[i] != "":
+			var mat_path := slice_materials[i]
+			var loaded_mat = load(mat_path)
+			if loaded_mat:
+				# Create a Sprite2D and save as .tscn scene
+				var sprite := Sprite2D.new()
+				sprite.name = file_name
+				
+				# Load base texture (prefer physical texture resource if it's ImageTexture)
+				var actual_tex: Texture2D = texture
+				if texture is ImageTexture and src_path != "":
+					var loaded = load(src_path)
+					if loaded is Texture2D:
+						actual_tex = loaded
+				sprite.texture = actual_tex
+				sprite.region_enabled = true
+				sprite.region_rect = r
+				sprite.material = loaded_mat
+				
+				# Pack scene
+				var packed_scene := PackedScene.new()
+				var pack_err := packed_scene.pack(sprite)
+				if pack_err == OK:
+					var scene_path := out_dir + "/" + file_name + ".tscn"
+					var save_err := ResourceSaver.save(packed_scene, scene_path)
+					if save_err != OK:
+						push_error("SpriteSlicer: Could not save TSCN scene: %s (error %d)" % [scene_path, save_err])
+					else:
+						print("Saved Shader Scene: ", scene_path)
+				else:
+					push_error("SpriteSlicer: Could not pack Sprite2D node (error %d)" % pack_err)
+				
+				# Clean up node reference
+				sprite.queue_free()
 
 	if export_spriteframes:
 		var sf := SpriteFrames.new()

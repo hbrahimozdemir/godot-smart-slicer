@@ -12,11 +12,13 @@ signal brush_paint_clicked(img_pos: Vector2i)
 signal brush_paint_dragged(img_pos: Vector2i)
 signal brush_paint_released()
 signal recolor_clicked(img_pos: Vector2i)
+signal stamp_pasted(img_pos: Vector2i, stamp_tex: Texture2D)
 signal slice_action_started()
 
 var texture: Texture2D = null
 var rects: Array[Rect2] = []
 var slice_names: Array[String] = []
+var slice_materials: Array[String] = []
 var selected_indices: Array = []
 var locked_states: Array[bool] = []
 
@@ -28,7 +30,12 @@ var erase_mode: bool = false
 var brush_erase_mode: bool = false
 var paint_mode: bool = false
 var recolor_mode: bool = false
+var stamp_mode: bool = false
+var stamp_tex: Texture2D = null
 var paint_color: Color = Color.WHITE
+var tolerance: float = 0.18
+var preview_mask: Array[Vector2i] = []
+var last_preview_pixel: Vector2i = Vector2i(-1, -1)
 var _brush_erasing: bool = false
 var _brush_painting: bool = false
 
@@ -70,12 +77,15 @@ func _ready() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_MOUSE_EXIT:
 		is_hovering = false
+		preview_mask.clear()
+		last_preview_pixel = Vector2i(-1, -1)
 		queue_redraw()
 
 func load_texture(tex: Texture2D) -> void:
 	texture = tex
 	rects.clear()
 	slice_names.clear()
+	slice_materials.clear()
 	selected_indices.clear()
 	locked_states.clear()
 	_update_min_size()
@@ -90,8 +100,10 @@ func update_texture(tex: Texture2D) -> void:
 func set_rects(new_rects: Array[Rect2]) -> void:
 	rects = new_rects.duplicate()
 	slice_names.clear()
+	slice_materials.clear()
 	for i in range(rects.size()):
 		slice_names.append("")
+		slice_materials.append("")
 	selected_indices.clear()
 	locked_states.clear()
 	locked_states.resize(rects.size())
@@ -214,6 +226,20 @@ func _draw() -> void:
 		col.a = 0.8
 		draw_arc(hover_mouse_pos, rad, 0.0, TAU, 32, col, 1.5)
 
+	# Draw magic wand preview mask
+	if (erase_mode or recolor_mode) and is_hovering and not preview_mask.is_empty():
+		var mask_color := Color(0.3, 0.7, 1.0, 0.4) if erase_mode else paint_color
+		mask_color.a = 0.45
+		var psz := Vector2(zoom, zoom)
+		for p in preview_mask:
+			draw_rect(Rect2(Vector2(p) * zoom, psz), mask_color)
+
+	# Draw stamp preview
+	if stamp_mode and stamp_tex and is_hovering:
+		var sz := Vector2(stamp_tex.get_width(), stamp_tex.get_height()) * zoom
+		var dest_pos := hover_mouse_pos - sz / 2.0
+		draw_texture_rect(stamp_tex, Rect2(dest_pos, sz), false, Color(1.0, 1.0, 1.0, 0.6))
+
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
 		var cell: int = 8
@@ -330,7 +356,8 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed:
 		var key_event := event as InputEventKey
-		var focus_owner: Control = get_viewport().gui_get_focus_owner()
+		var vp := get_viewport()
+		var focus_owner: Control = vp.gui_get_focus_owner() if vp else null
 		if focus_owner is LineEdit or focus_owner is TextEdit:
 			return # Do not intercept text editing (like SpinBoxes)
 
@@ -466,6 +493,11 @@ func _on_lmb_down(pos: Vector2) -> void:
 		recolor_clicked.emit(Vector2i(img_p))
 		return
 
+	if stamp_mode and stamp_tex:
+		var img_p = _img(pos)
+		stamp_pasted.emit(Vector2i(img_p), stamp_tex)
+		return
+
 	if brush_erase_mode:
 		_brush_erasing = true
 		brush_erase_clicked.emit(Vector2i(_img(pos)))
@@ -586,6 +618,7 @@ func _on_rmb_up(pos: Vector2) -> void:
 				slice_action_started.emit()
 				rects.append(new_rect)
 				slice_names.append("")
+				slice_materials.append("")
 				locked_states.append(false)
 				selected_indices = [rects.size() - 1]
 				selection_changed.emit(selected_indices)
@@ -594,10 +627,19 @@ func _on_rmb_up(pos: Vector2) -> void:
 		queue_redraw()
 
 func _on_mouse_motion(pos: Vector2) -> void:
-	if brush_erase_mode or paint_mode:
+	if brush_erase_mode or paint_mode or stamp_mode:
 		hover_mouse_pos = pos
 		is_hovering = true
 		queue_redraw()
+		
+	if (erase_mode or recolor_mode) and texture:
+		hover_mouse_pos = pos
+		is_hovering = true
+		var img_p := Vector2i(_img(pos))
+		if img_p != last_preview_pixel:
+			last_preview_pixel = img_p
+			_recalculate_wand_preview(img_p)
+			queue_redraw()
 
 	if _brush_erasing:
 		brush_erase_dragged.emit(Vector2i(_img(pos)))
@@ -661,9 +703,62 @@ func _on_mouse_motion(pos: Vector2) -> void:
 		rects_changed.emit()
 		queue_redraw()
 
+func _recalculate_wand_preview(img_p: Vector2i) -> void:
+	preview_mask.clear()
+	if not texture:
+		return
+	var img := texture.get_image()
+	if not img or img.is_empty():
+		return
+	var W := img.get_width()
+	var H := img.get_height()
+	if img_p.x < 0 or img_p.y < 0 or img_p.x >= W or img_p.y >= H:
+		return
+
+	var bg := img.get_pixel(img_p.x, img_p.y)
+	if bg.a < 0.01:
+		return
+
+	var visited := {}
+	var queue := [img_p]
+	var head := 0
+	
+	const MAX_PREVIEW = 8000
+	
+	while head < queue.size() and queue.size() < MAX_PREVIEW:
+		var p: Vector2i = queue[head]
+		head += 1
+		
+		var idx := p.y * W + p.x
+		if idx in visited:
+			continue
+		visited[idx] = true
+		preview_mask.append(p)
+		
+		# 4-way check
+		var neighbors := [
+			Vector2i(p.x - 1, p.y),
+			Vector2i(p.x + 1, p.y),
+			Vector2i(p.x, p.y - 1),
+			Vector2i(p.x, p.y + 1)
+		]
+		for n in neighbors:
+			if n.x >= 0 and n.x < W and n.y >= 0 and n.y < H:
+				var n_idx: int = n.y * W + n.x
+				if not n_idx in visited:
+					var c: Color = img.get_pixel(n.x, n.y)
+					var dr: float = c.r - bg.r
+					var dg: float = c.g - bg.g
+					var db: float = c.b - bg.b
+					var dist: float = sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
+					if dist <= tolerance:
+						queue.append(n)
+
 func _delete_rect(idx: int) -> void:
 	rects.remove_at(idx)
 	slice_names.remove_at(idx)
+	if idx < slice_materials.size():
+		slice_materials.remove_at(idx)
 	if idx < locked_states.size():
 		locked_states.remove_at(idx)
 	selected_indices.erase(idx)
@@ -683,6 +778,8 @@ func _delete_selected_rects() -> void:
 	for idx in to_delete:
 		rects.remove_at(idx)
 		slice_names.remove_at(idx)
+		if idx < slice_materials.size():
+			slice_materials.remove_at(idx)
 		if idx < locked_states.size():
 			locked_states.remove_at(idx)
 	selected_indices.clear()
@@ -720,8 +817,13 @@ func _duplicate_selected_rects() -> void:
 		if new_name != "":
 			new_name = new_name + "_copy"
 		
+		var new_mat := ""
+		if idx < slice_materials.size():
+			new_mat = slice_materials[idx]
+		
 		rects.append(new_rect)
 		slice_names.append(new_name)
+		slice_materials.append(new_mat)
 		locked_states.append(false)
 		new_selected_indices.append(rects.size() - 1)
 		
@@ -747,11 +849,14 @@ func _merge_selected_rects() -> void:
 	for idx in to_delete:
 		rects.remove_at(idx)
 		slice_names.remove_at(idx)
+		if idx < slice_materials.size():
+			slice_materials.remove_at(idx)
 		if idx < locked_states.size():
 			locked_states.remove_at(idx)
 			
 	rects.append(union_rect)
 	slice_names.append("")
+	slice_materials.append("")
 	locked_states.append(false)
 	
 	selected_indices = [rects.size() - 1]

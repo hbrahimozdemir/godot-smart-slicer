@@ -65,12 +65,22 @@ var _grid_chk_keep_empty: CheckBox
 var _preview_player: _PreviewPlayerScript
 var _anim_name_edit: LineEdit
 
+var _stamp_dialog: FileDialog
+var _material_dialog: FileDialog
+var _mat_edit: LineEdit
+var _mat_browse_btn: Button
+var _mat_box: HBoxContainer
+
 
 
 func _ready() -> void:
 	_build_ui()
 	_setup_file_dialog()
 	_setup_grid_dialog()
+	_setup_stamp_dialog()
+	_setup_material_dialog()
+	if _canvas:
+		_canvas.tolerance = _bg_tolerance
 
 # --- UI Construction ---
 
@@ -100,6 +110,7 @@ func _build_ui() -> void:
 	_canvas.brush_paint_dragged.connect(_on_brush_paint_dragged)
 	_canvas.brush_paint_released.connect(_on_brush_paint_released)
 	_canvas.recolor_clicked.connect(_on_recolor_clicked)
+	_canvas.stamp_pasted.connect(_on_canvas_stamp_pasted)
 	_canvas.slice_action_started.connect(_push_slices_state)
 	scroll.add_child(_canvas)
 
@@ -213,7 +224,11 @@ func _make_toolbar() -> Control:
 	tol_spin.custom_minimum_size = Vector2(68, 0)
 	tol_spin.suffix = "%"
 	tol_spin.tooltip_text = "Background removal tolerance"
-	tol_spin.value_changed.connect(func(v: float): _bg_tolerance = v / 100.0)
+	tol_spin.value_changed.connect(func(v: float): 
+		_bg_tolerance = v / 100.0
+		if _canvas:
+			_canvas.tolerance = _bg_tolerance
+	)
 	tb2.add_child(tol_spin)
 
 	tb2.add_child(VSeparator.new())
@@ -258,6 +273,17 @@ func _make_toolbar() -> Control:
 			_canvas.queue_redraw()
 	)
 	tb2.add_child(_color_picker)
+
+	tb2.add_child(VSeparator.new())
+
+	var stamp_btn := Button.new()
+	stamp_btn.text = "Stamp..."
+	stamp_btn.tooltip_text = "Paste an external PNG onto the canvas"
+	stamp_btn.pressed.connect(func():
+		if _stamp_dialog:
+			_stamp_dialog.popup_centered_ratio(0.6)
+	)
+	tb2.add_child(stamp_btn)
 
 	tb2.add_child(VSeparator.new())
 
@@ -347,6 +373,25 @@ func _make_right_panel() -> PanelContainer:
 	_name_edit.placeholder_text = "Custom Name"
 	_name_edit.text_changed.connect(_on_name_changed)
 	_props_box.add_child(_name_edit)
+
+	_mat_box = HBoxContainer.new()
+	_mat_box.add_theme_constant_override("separation", 4)
+	_props_box.add_child(_mat_box)
+	
+	_mat_edit = LineEdit.new()
+	_mat_edit.placeholder_text = "No Material/Shader"
+	_mat_edit.editable = false
+	_mat_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_mat_box.add_child(_mat_edit)
+	
+	_mat_browse_btn = Button.new()
+	_mat_browse_btn.text = "..."
+	_mat_browse_btn.tooltip_text = "Select Shader/Material file (.tres)"
+	_mat_browse_btn.pressed.connect(func():
+		if _material_dialog:
+			_material_dialog.popup_centered_ratio(0.5)
+	)
+	_mat_box.add_child(_mat_browse_btn)
 
 	_props_grid = GridContainer.new()
 	_props_grid.columns = 2
@@ -518,6 +563,24 @@ func _setup_file_dialog() -> void:
 	_file_dialog.file_selected.connect(_load_texture)
 	add_child(_file_dialog)
 
+func _setup_stamp_dialog() -> void:
+	_stamp_dialog = FileDialog.new()
+	_stamp_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_stamp_dialog.access = FileDialog.ACCESS_RESOURCES
+	_stamp_dialog.title = "Select Stamp Image"
+	_stamp_dialog.add_filter("*.png, *.jpg, *.jpeg, *.webp, *.bmp, *.svg", "Image Files")
+	_stamp_dialog.file_selected.connect(_load_stamp_image)
+	add_child(_stamp_dialog)
+
+func _setup_material_dialog() -> void:
+	_material_dialog = FileDialog.new()
+	_material_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	_material_dialog.access = FileDialog.ACCESS_RESOURCES
+	_material_dialog.title = "Select Shader/Material Resource"
+	_material_dialog.add_filter("*.tres, *.material", "Material Files")
+	_material_dialog.file_selected.connect(_assign_material_to_selected)
+	add_child(_material_dialog)
+
 func _setup_grid_dialog() -> void:
 	_grid_dialog = ConfirmationDialog.new()
 	_grid_dialog.title = "Grid Slice Settings"
@@ -657,6 +720,8 @@ func _on_auto_slice() -> void:
 func _on_clear() -> void:
 	_push_slices_state()
 	_canvas.rects.clear()
+	_canvas.slice_names.clear()
+	_canvas.slice_materials.clear()
 	_canvas.selected_indices.clear()
 	_canvas.locked_states.clear()
 	_canvas.queue_redraw()
@@ -676,13 +741,15 @@ func _on_extract() -> void:
 		_chk_atlas.button_pressed,
 		_chk_spriteframes.button_pressed,
 		_current_tex_path, _canvas.slice_names,
-		a_name)
+		a_name,
+		_canvas.slice_materials)
 
 func _select_tool(tool_name: String) -> void:
 	var wand_on := (tool_name == "wand")
 	var brush_erase_on := (tool_name == "brush_erase")
 	var recolor_on := (tool_name == "recolor")
 	var paint_on := (tool_name == "paint")
+	var stamp_on := (tool_name == "stamp")
 	
 	_wand_btn.set_pressed_no_signal(wand_on)
 	_brush_erase_btn.set_pressed_no_signal(brush_erase_on)
@@ -696,6 +763,9 @@ func _select_tool(tool_name: String) -> void:
 		_canvas.brush_erase_mode = brush_erase_on
 		_canvas.recolor_mode = recolor_on
 		_canvas.paint_mode = paint_on
+		_canvas.stamp_mode = stamp_on
+		if not stamp_on:
+			_canvas.stamp_tex = null
 		_canvas.queue_redraw()
 
 func _on_wand_toggled(toggled: bool) -> void:
@@ -709,6 +779,46 @@ func _on_recolor_toggled(toggled: bool) -> void:
 
 func _on_paint_toggled(toggled: bool) -> void:
 	_select_tool("paint" if toggled else "")
+
+func _load_stamp_image(path: String) -> void:
+	var tex = load(path)
+	if tex is Texture2D and _canvas:
+		_canvas.stamp_tex = tex
+		_select_tool("stamp")
+
+func _assign_material_to_selected(path: String) -> void:
+	if not _canvas or _canvas.selected_indices.size() != 1:
+		return
+	var idx: int = _canvas.selected_indices[0]
+	if idx < 0 or idx >= _canvas.rects.size():
+		return
+	
+	_push_slices_state()
+	while _canvas.slice_materials.size() <= idx:
+		_canvas.slice_materials.append("")
+	_canvas.slice_materials[idx] = path
+	_update_props()
+	_refresh_list()
+
+func _on_canvas_stamp_pasted(img_pos: Vector2i, stamp_tex: Texture2D) -> void:
+	if not _current_tex or _current_tex_path.is_empty() or not stamp_tex:
+		return
+	_push_image_state()
+	_ensure_edited_path()
+	var base_img := _current_tex.get_image()
+	var stamp_img := stamp_tex.get_image()
+	var result := _BgRemover.paste_stamp(base_img, stamp_img, img_pos.x, img_pos.y)
+	if result == null or result.is_empty():
+		return
+		
+	if _current_tex is ImageTexture:
+		_current_tex.update(result)
+		_canvas.queue_redraw()
+	else:
+		var new_tex := ImageTexture.create_from_image(result)
+		_current_tex = new_tex
+		_canvas.update_texture(new_tex)
+	_save_edited_texture()
 
 func _on_brush_erase_clicked(img_pos: Vector2i) -> void:
 	_push_image_state()
@@ -1033,18 +1143,30 @@ func _update_props() -> void:
 			_updating_props = false
 			return
 		_props_grid.visible = true
+		if _mat_box:
+			_mat_box.visible = true
 		var r: Rect2 = _canvas.rects[idx]
 		var cname = ""
 		if idx < _canvas.slice_names.size():
 			cname = _canvas.slice_names[idx]
 		_name_edit.text = cname
 		_name_edit.placeholder_text = "Custom Name"
+		
+		var mat_path := ""
+		if idx < _canvas.slice_materials.size():
+			mat_path = _canvas.slice_materials[idx]
+		if _mat_edit:
+			_mat_edit.text = mat_path.get_file()
+			_mat_edit.tooltip_text = mat_path if mat_path != "" else "No Material/Shader"
+			
 		_spin_x.value = r.position.x
 		_spin_y.value = r.position.y
 		_spin_w.value = r.size.x
 		_spin_h.value = r.size.y
 	else:
 		_props_grid.visible = false
+		if _mat_box:
+			_mat_box.visible = false
 		_name_edit.text = ""
 		_name_edit.placeholder_text = "Seq Name (e.g. chest)"
 	_updating_props = false
@@ -1054,7 +1176,8 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventKey and event.pressed:
 		var key_event := event as InputEventKey
-		var focus_owner: Control = get_viewport().gui_get_focus_owner()
+		var vp := get_viewport()
+		var focus_owner: Control = vp.gui_get_focus_owner() if vp else null
 		if focus_owner is LineEdit or focus_owner is TextEdit:
 			return
 
@@ -1098,6 +1221,7 @@ func _push_slices_state() -> void:
 		"type": "slices",
 		"rects": _canvas.rects.duplicate(),
 		"slice_names": _canvas.slice_names.duplicate(),
+		"slice_materials": _canvas.slice_materials.duplicate(),
 		"selected_indices": _canvas.selected_indices.duplicate(),
 		"locked_states": _canvas.locked_states.duplicate()
 	})
@@ -1142,12 +1266,20 @@ func _undo() -> void:
 			"type": "slices",
 			"rects": _canvas.rects.duplicate(),
 			"slice_names": _canvas.slice_names.duplicate(),
+			"slice_materials": _canvas.slice_materials.duplicate(),
 			"selected_indices": _canvas.selected_indices.duplicate(),
 			"locked_states": _canvas.locked_states.duplicate()
 		}
 		
 		_canvas.rects = prev_state["rects"].duplicate()
 		_canvas.slice_names = prev_state["slice_names"].duplicate()
+		_canvas.slice_materials = prev_state.get("slice_materials", []).duplicate()
+		# Out-of-bounds protection guard
+		while _canvas.slice_materials.size() < _canvas.rects.size():
+			_canvas.slice_materials.append("")
+		while _canvas.slice_names.size() < _canvas.rects.size():
+			_canvas.slice_names.append("")
+			
 		_canvas.selected_indices = prev_state["selected_indices"].duplicate()
 		_canvas.locked_states = prev_state["locked_states"].duplicate()
 		_canvas.queue_redraw()
@@ -1193,12 +1325,20 @@ func _redo() -> void:
 			"type": "slices",
 			"rects": _canvas.rects.duplicate(),
 			"slice_names": _canvas.slice_names.duplicate(),
+			"slice_materials": _canvas.slice_materials.duplicate(),
 			"selected_indices": _canvas.selected_indices.duplicate(),
 			"locked_states": _canvas.locked_states.duplicate()
 		}
 		
 		_canvas.rects = next_state["rects"].duplicate()
 		_canvas.slice_names = next_state["slice_names"].duplicate()
+		_canvas.slice_materials = next_state.get("slice_materials", []).duplicate()
+		# Out-of-bounds protection guard
+		while _canvas.slice_materials.size() < _canvas.rects.size():
+			_canvas.slice_materials.append("")
+		while _canvas.slice_names.size() < _canvas.rects.size():
+			_canvas.slice_names.append("")
+			
 		_canvas.selected_indices = next_state["selected_indices"].duplicate()
 		_canvas.locked_states = next_state["locked_states"].duplicate()
 		_canvas.queue_redraw()

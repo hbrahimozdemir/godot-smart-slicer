@@ -341,3 +341,17 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 
 	return img
 
+static func paste_stamp(base_image: Image, stamp_image: Image, center_x: int, center_y: int) -> Image:
+	base_image.convert(Image.FORMAT_RGBA8)
+	stamp_image.convert(Image.FORMAT_RGBA8)
+	
+	var stamp_w := stamp_image.get_width()
+	var stamp_h := stamp_image.get_height()
+	
+	# Calculate top-left destination position
+	var dest_x := center_x - stamp_w / 2
+	var dest_y := center_y - stamp_h / 2
+	
+	# Fast alpha blending blit via C++!
+	base_image.blend_rect(stamp_image, Rect2i(0, 0, stamp_w, stamp_h), Vector2i(dest_x, dest_y))
+	return base_image
