@@ -265,17 +265,93 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 	return img
 
 static func brush_erase(image: Image, center_x: int, center_y: int, radius: int) -> Image:
-	var img := image.duplicate()
-	img.convert(Image.FORMAT_RGBA8)
-	var W: int = img.get_width()
-	var H: int = img.get_height()
-	
+	image.convert(Image.FORMAT_RGBA8)
+	var W: int = image.get_width()
+	var H: int = image.get_height()
+
 	for y in range(max(0, center_y - radius), min(H, center_y + radius + 1)):
 		for x in range(max(0, center_x - radius), min(W, center_x + radius + 1)):
 			var dx := x - center_x
 			var dy := y - center_y
 			if dx*dx + dy*dy <= radius*radius:
-				img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
+				image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
+	return image
+
+static func brush_paint(image: Image, center_x: int, center_y: int, radius: int, color: Color) -> Image:
+	image.convert(Image.FORMAT_RGBA8)
+	var W: int = image.get_width()
+	var H: int = image.get_height()
+
+	for y in range(max(0, center_y - radius), min(H, center_y + radius + 1)):
+		for x in range(max(0, center_x - radius), min(W, center_x + radius + 1)):
+			var dx := x - center_x
+			var dy := y - center_y
+			if dx*dx + dy*dy <= radius*radius:
+				image.set_pixel(x, y, color)
+	return image
+
+static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_color: Color, tolerance: float) -> Image:
+	var img: Image = image.duplicate()
+	img.convert(Image.FORMAT_RGBA8)
+
+	var W: int = img.get_width()
+	var H: int = img.get_height()
+	if W < 2 or H < 2:
+		return img
+	if start_x < 0 or start_y < 0 or start_x >= W or start_y >= H:
+		return img
+		
+	var bg: Color = img.get_pixel(start_x, start_y)
+	if bg.a < 0.01:
+		return img
+
+	var removed: Array = []
+	removed.resize(W * H)
+	removed.fill(false)
+	
+	var visited: Array = []
+	visited.resize(W * H)
+	visited.fill(false)
+
+	var queue: Array = []
+	var head: int = 0
+	
+	_try_seed(queue, visited, img, start_x, start_y, bg, tolerance, W)
+
+	while head < queue.size():
+		var p: Vector2i = queue[head]
+		head += 1
+		removed[p.y * W + p.x] = true
+
+		var nx: int = p.x - 1
+		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		nx = p.x + 1
+		if nx < W: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		var ny: int = p.y - 1
+		if ny >= 0: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+		ny = p.y + 1
+		if ny < H: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+
+	for y in range(H):
+		for x in range(W):
+			if removed[y * W + x]:
+				var original := img.get_pixel(x, y)
+				# Recolor while keeping original pixel's alpha!
+				img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, original.a))
+
 	return img
 
-
+static func paste_stamp(base_image: Image, stamp_image: Image, center_x: int, center_y: int) -> Image:
+	base_image.convert(Image.FORMAT_RGBA8)
+	stamp_image.convert(Image.FORMAT_RGBA8)
+	
+	var stamp_w := stamp_image.get_width()
+	var stamp_h := stamp_image.get_height()
+	
+	# Calculate top-left destination position
+	var dest_x := center_x - stamp_w / 2
+	var dest_y := center_y - stamp_h / 2
+	
+	# Fast alpha blending blit via C++!
+	base_image.blend_rect(stamp_image, Rect2i(0, 0, stamp_w, stamp_h), Vector2i(dest_x, dest_y))
+	return base_image
