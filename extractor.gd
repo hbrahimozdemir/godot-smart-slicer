@@ -1,7 +1,7 @@
 @tool
 class_name SpriteExtractor
 
-static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, export_atlas: bool, export_spriteframes: bool, tex_path: String = "", names: Array[String] = []) -> void:
+static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, export_atlas: bool, export_spriteframes: bool, tex_path: String = "", names: Array[String] = [], anim_name: String = "default") -> void:
 	var src_path := tex_path if tex_path != "" else texture.resource_path
 	var base_path := src_path.get_base_dir()
 	var base_name := src_path.get_file().get_basename()
@@ -12,6 +12,9 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 		dir.make_dir(base_name + "_slices")
 
 	var img := texture.get_image()
+	if img == null or img.is_empty():
+		push_error("SpriteSlicer: Source image is null or empty.")
+		return
 
 	for i in range(rects.size()):
 		var r := rects[i]
@@ -22,12 +25,16 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 		if export_png:
 			var region := img.get_region(Rect2i(r))
 			var save_path := out_dir + "/" + file_name + ".png"
-			region.save_png(save_path)
-			print("Saved PNG: ", save_path)
+			var abs_save := ProjectSettings.globalize_path(save_path)
+			var err := region.save_png(abs_save)
+			if err != OK:
+				push_error("SpriteSlicer: Could not save PNG: %s (error %d)" % [abs_save, err])
+			else:
+				print("Saved PNG: ", save_path)
 			
 		if export_atlas:
 			var atlas := AtlasTexture.new()
-			var actual_tex = texture
+			var actual_tex: Texture2D = texture
 			if texture is ImageTexture and src_path != "":
 				var loaded = load(src_path)
 				if loaded is Texture2D:
@@ -35,32 +42,46 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 			atlas.atlas = actual_tex
 			atlas.region = r
 			var save_path := out_dir + "/" + file_name + ".tres"
-			ResourceSaver.save(atlas, save_path)
-			print("Saved AtlasTexture: ", save_path)
+			var err := ResourceSaver.save(atlas, save_path)
+			if err != OK:
+				push_error("SpriteSlicer: Could not save AtlasTexture: %s (error %d)" % [save_path, err])
+			else:
+				print("Saved AtlasTexture: ", save_path)
 
 	if export_spriteframes:
 		var sf := SpriteFrames.new()
-		if sf.has_animation("default"):
+		var a_name := anim_name.strip_edges()
+		if a_name == "":
+			a_name = "default"
+		
+		# SpriteFrames initializes with "default" automatically
+		if sf.has_animation("default") and a_name != "default":
 			sf.remove_animation("default")
-		sf.add_animation("default")
-		sf.set_animation_speed("default", 8.0)
-		sf.set_animation_loop("default", true)
+			
+		if not sf.has_animation(a_name):
+			sf.add_animation(a_name)
+			
+		sf.set_animation_speed(a_name, 8.0)
+		sf.set_animation_loop(a_name, true)
 		
 		for i in range(rects.size()):
 			var r := rects[i]
 			var atlas := AtlasTexture.new()
-			var actual_tex = texture
+			var actual_tex: Texture2D = texture
 			if texture is ImageTexture and src_path != "":
 				var loaded = load(src_path)
 				if loaded is Texture2D:
 					actual_tex = loaded
 			atlas.atlas = actual_tex
 			atlas.region = r
-			sf.add_frame("default", atlas)
+			sf.add_frame(a_name, atlas)
 			
 		var sf_save_path := out_dir + "/" + base_name + "_animation.tres"
-		ResourceSaver.save(sf, sf_save_path)
-		print("Saved SpriteFrames: ", sf_save_path)
+		var err := ResourceSaver.save(sf, sf_save_path)
+		if err != OK:
+			push_error("SpriteSlicer: Could not save SpriteFrames: %s (error %d)" % [sf_save_path, err])
+		else:
+			print("Saved SpriteFrames: ", sf_save_path)
 
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().scan()
