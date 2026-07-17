@@ -6,6 +6,7 @@ const _AutoSlicer   = preload("res://addons/sprite_slicer/auto_slicer.gd")
 const _Extractor    = preload("res://addons/sprite_slicer/extractor.gd")
 const _CanvasScript = preload("res://addons/sprite_slicer/slicer_canvas.gd")
 const _BgRemover    = preload("res://addons/sprite_slicer/bg_remover.gd")
+const _PreviewPlayerScript = preload("res://addons/sprite_slicer/slicer_preview_player.gd")
 
 # UI References
 var _canvas: _CanvasScript
@@ -47,19 +48,8 @@ var _grid_spin_sep_x: SpinBox
 var _grid_spin_sep_y: SpinBox
 var _grid_chk_keep_empty: CheckBox
 
-# Preview Player State
-var _preview_playing: bool = false
-var _preview_fps: float = 8.0
-var _preview_frame_time: float = 0.0
-var _preview_frame_idx: int = 0
-var _preview_indices: Array = []
-var _preview_atlas: AtlasTexture
-
 # UI references for Preview Player
-var _preview_rect: TextureRect
-var _preview_play_btn: Button
-var _preview_fps_spin: SpinBox
-var _preview_label: Label
+var _preview_player: _PreviewPlayerScript
 
 
 
@@ -294,7 +284,8 @@ func _make_right_panel() -> PanelContainer:
 	vbox.add_child(_chk_spriteframes)
 
 	vbox.add_child(HSeparator.new())
-	vbox.add_child(_make_preview_panel())
+	_preview_player = _PreviewPlayerScript.new()
+	vbox.add_child(_preview_player)
 
 	return panel
 
@@ -422,7 +413,8 @@ func _on_grid_slice_confirmed() -> void:
 	_canvas.set_rects(rects)
 	_refresh_list()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_browse() -> void:
 	if _file_dialog:
@@ -442,7 +434,8 @@ func _load_texture(path: String) -> void:
 	_canvas.set_zoom(1.0)
 	_refresh_list()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_auto_slice() -> void:
 	if not _current_tex:
@@ -450,7 +443,8 @@ func _on_auto_slice() -> void:
 	_canvas.set_rects(_AutoSlicer.slice(_current_tex.get_image()))
 	_refresh_list()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_clear() -> void:
 	_canvas.rects.clear()
@@ -458,7 +452,8 @@ func _on_clear() -> void:
 	_canvas.queue_redraw()
 	_refresh_list()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_extract() -> void:
 	if not _current_tex or _canvas.rects.is_empty():
@@ -580,7 +575,8 @@ func _on_remove_bg() -> void:
 	_canvas.selected_indices.clear()
 	_refresh_list()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 	if Engine.is_editor_hint():
 		EditorInterface.get_resource_filesystem().scan()
@@ -602,12 +598,14 @@ func _on_canvas_zoom_changed(z: float) -> void:
 func _on_canvas_selection_changed(indices: Array) -> void:
 	_sync_list_highlight(indices)
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_rects_changed() -> void:
 	_refresh_list()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_list_item_selected(_index: int) -> void:
 	var selected: PackedInt32Array = _slice_list.get_selected_items()
@@ -617,7 +615,8 @@ func _on_list_item_selected(_index: int) -> void:
 	_canvas.selected_indices = canvas_selected
 	_canvas.queue_redraw()
 	_update_props()
-	_update_preview_indices()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_prop_changed() -> void:
 	if _updating_props:
@@ -767,104 +766,5 @@ func _undo() -> void:
 	var new_tex := ImageTexture.create_from_image(prev_img)
 	_current_tex = new_tex
 	_canvas.load_texture(new_tex)
-
-func _process(delta: float) -> void:
-	if not _preview_playing or _preview_indices.is_empty():
-		return
-	_preview_frame_time += delta
-	var interval: float = 1.0 / max(1.0, _preview_fps)
-	if _preview_frame_time >= interval:
-		_preview_frame_time = 0.0
-		_preview_frame_idx = (_preview_frame_idx + 1) % _preview_indices.size()
-		_update_preview_texture()
-
-func _make_preview_panel() -> VBoxContainer:
-	var container := VBoxContainer.new()
-	container.add_theme_constant_override("separation", 4)
-	
-	var title := Label.new()
-	title.text = "Animation Preview"
-	container.add_child(title)
-	
-	var bg_panel := PanelContainer.new()
-	bg_panel.custom_minimum_size = Vector2(0, 120)
-	bg_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bg_panel.size_flags_vertical = Control.SIZE_FILL
-	container.add_child(bg_panel)
-	
-	_preview_rect = TextureRect.new()
-	_preview_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	_preview_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	_preview_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_preview_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	bg_panel.add_child(_preview_rect)
-	
-	_preview_atlas = AtlasTexture.new()
-	_preview_rect.texture = _preview_atlas
-	
-	var controls := HBoxContainer.new()
-	controls.add_theme_constant_override("separation", 5)
-	container.add_child(controls)
-	
-	_preview_play_btn = Button.new()
-	_preview_play_btn.text = "Play"
-	_preview_play_btn.pressed.connect(_on_preview_play_pressed)
-	controls.add_child(_preview_play_btn)
-	
-	var fps_lbl := Label.new()
-	fps_lbl.text = "FPS:"
-	controls.add_child(fps_lbl)
-	
-	_preview_fps_spin = SpinBox.new()
-	_preview_fps_spin.min_value = 1
-	_preview_fps_spin.max_value = 60
-	_preview_fps_spin.value = 8
-	_preview_fps_spin.step = 1
-	_preview_fps_spin.custom_minimum_size = Vector2(55, 0)
-	_preview_fps_spin.value_changed.connect(func(v: float): _preview_fps = v)
-	controls.add_child(_preview_fps_spin)
-	
-	_preview_label = Label.new()
-	_preview_label.text = "Frame: -"
-	_preview_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_preview_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	controls.add_child(_preview_label)
-	
-	return container
-
-func _on_preview_play_pressed() -> void:
-	_preview_playing = !_preview_playing
-	_preview_play_btn.text = "Pause" if _preview_playing else "Play"
-	if _preview_playing:
-		_update_preview_indices()
-
-func _update_preview_indices() -> void:
-	if not _canvas:
-		return
-	var selected: Array = _canvas.selected_indices.duplicate()
-	if selected.is_empty():
-		_preview_indices = []
-		for i in range(_canvas.rects.size()):
-			_preview_indices.append(i)
-	else:
-		_preview_indices = _sort_indices_spatially(selected)
-	
-	if _preview_frame_idx >= _preview_indices.size():
-		_preview_frame_idx = 0
-	
-	_update_preview_texture()
-
-func _update_preview_texture() -> void:
-	if not _current_tex or _preview_indices.is_empty():
-		_preview_atlas.atlas = null
-		_preview_label.text = "Frame: -"
-		return
-		
-	var idx: int = _preview_indices[_preview_frame_idx]
-	if idx < 0 or idx >= _canvas.rects.size():
-		return
-		
-	var r: Rect2 = _canvas.rects[idx]
-	_preview_atlas.atlas = _current_tex
-	_preview_atlas.region = r
-	_preview_label.text = "Frame: %d" % idx
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
