@@ -2,11 +2,12 @@
 extends HBoxContainer
 
 # Preloads
-const _AutoSlicer   = preload("res://addons/sprite_slicer/auto_slicer.gd")
-const _Extractor    = preload("res://addons/sprite_slicer/extractor.gd")
-const _CanvasScript = preload("res://addons/sprite_slicer/slicer_canvas.gd")
-const _BgRemover    = preload("res://addons/sprite_slicer/bg_remover.gd")
-const _PreviewPlayerScript = preload("res://addons/sprite_slicer/slicer_preview_player.gd")
+const _AutoSlicer   = preload("res://addons/sprite_forge/auto_slicer.gd")
+const _Extractor    = preload("res://addons/sprite_forge/extractor.gd")
+const _CanvasScript = preload("res://addons/sprite_forge/slicer_canvas.gd")
+const _BgRemover    = preload("res://addons/sprite_forge/bg_remover.gd")
+const _PreviewPlayerScript = preload("res://addons/sprite_forge/slicer_preview_player.gd")
+
 
 # UI References
 var _canvas: _CanvasScript

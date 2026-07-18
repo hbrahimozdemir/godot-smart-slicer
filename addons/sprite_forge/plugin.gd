@@ -4,7 +4,7 @@ extends EditorPlugin
 var dock
 
 func _enter_tree():
-	dock = preload("res://addons/sprite_slicer/slicer_ui.tscn").instantiate()
+	dock = preload("res://addons/sprite_forge/slicer_ui.tscn").instantiate()
 	add_control_to_bottom_panel(dock, "SpriteForge")
 
 func _exit_tree():

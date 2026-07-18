@@ -1,4 +1,4 @@
-# Godot 4 Sprite Slicer & Background Remover
+# SpriteForge - Godot 4 Sprite Slicer & Background Remover
 
 A powerful Unity-style sprite editor and slicing tool for Godot 4, featuring smart background removal (perfect for AI-generated or flat background art).
 
@@ -9,9 +9,9 @@ A powerful Unity-style sprite editor and slicing tool for Godot 4, featuring sma
 - **Flexible Export:** Extract slices instantly as individual PNGs or AtlasTextures.
 
 ## Installation
-1. Copy the `addons/sprite_slicer` folder to your Godot project's `res://addons/` directory.
+1. Copy the `addons/sprite_forge` folder to your Godot project's `res://addons/` directory.
 2. Enable the plugin via **Project -> Project Settings -> Plugins**.
-3. The **Sprite Slicer** panel will appear in your bottom editor panel.
+3. The **SpriteForge** panel will appear in your bottom editor panel.
 
 ## Usage Guide
 1. **Browse:** Select the sprite sheet texture you want to edit.
