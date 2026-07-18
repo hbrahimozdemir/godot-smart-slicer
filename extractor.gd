@@ -1,15 +1,26 @@
 @tool
 class_name SpriteExtractor
 
-static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, export_atlas: bool, export_spriteframes: bool, tex_path: String = "", names: Array[String] = [], anim_name: String = "default", slice_materials: Array[String] = []) -> void:
+static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, export_atlas: bool, export_spriteframes: bool, tex_path: String = "", names: Array[String] = [], anim_name: String = "default", slice_materials: Array[String] = [], custom_folder: String = "", custom_base: String = "") -> void:
 	var src_path := tex_path if tex_path != "" else texture.resource_path
 	var base_path := src_path.get_base_dir()
 	var base_name := src_path.get_file().get_basename()
-	var out_dir := base_path + "/" + base_name + "_slices"
 
+	# Determine output folder name
+	var folder_name := custom_folder.strip_edges()
+	if folder_name == "":
+		folder_name = base_name + "_slices"
+	var out_dir := base_path + "/" + folder_name
+
+	# Determine file base name
+	var file_base := custom_base.strip_edges()
+	if file_base == "":
+		file_base = base_name
+
+	# Create output folder if it doesn't exist
 	var dir := DirAccess.open(base_path)
-	if dir and not dir.dir_exists(base_name + "_slices"):
-		dir.make_dir(base_name + "_slices")
+	if dir and not dir.dir_exists(folder_name):
+		dir.make_dir(folder_name)
 
 	var img := texture.get_image()
 	if img == null or img.is_empty():
@@ -18,7 +29,8 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 
 	for i in range(rects.size()):
 		var r := rects[i]
-		var file_name := base_name + "_" + str(i)
+		var file_name := file_base + "_" + str(i)
+		# Use custom slice name if it is configured
 		if i < names.size() and names[i].strip_edges() != "":
 			file_name = names[i].strip_edges()
 
@@ -112,7 +124,7 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 			atlas.region = r
 			sf.add_frame(a_name, atlas)
 			
-		var sf_save_path := out_dir + "/" + base_name + "_animation.tres"
+		var sf_save_path := out_dir + "/" + file_base + "_animation.tres"
 		var err := ResourceSaver.save(sf, sf_save_path)
 		if err != OK:
 			push_error("SpriteSlicer: Could not save SpriteFrames: %s (error %d)" % [sf_save_path, err])
@@ -120,4 +132,6 @@ static func extract(texture: Texture2D, rects: Array[Rect2], export_png: bool, e
 			print("Saved SpriteFrames: ", sf_save_path)
 
 	if Engine.is_editor_hint():
-		EditorInterface.get_resource_filesystem().scan()
+		var fs := EditorInterface.get_resource_filesystem()
+		if fs:
+			fs.scan_sources()

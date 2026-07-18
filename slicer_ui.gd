@@ -29,6 +29,7 @@ var _wand_btn:    Button
 var _brush_erase_btn: Button
 var _paint_btn: Button
 var _recolor_btn: Button
+var _stamp_btn: Button
 var _color_picker: ColorPickerButton
 var _props_grid: GridContainer
 
@@ -70,6 +71,17 @@ var _material_dialog: FileDialog
 var _mat_edit: LineEdit
 var _mat_browse_btn: Button
 var _mat_box: HBoxContainer
+var _stamp_props_box: VBoxContainer
+var _stamp_pos_x: SpinBox
+var _stamp_pos_y: SpinBox
+var _stamp_scale_x: SpinBox
+var _stamp_scale_y: SpinBox
+var _stamp_pivot_x: SpinBox
+var _stamp_pivot_y: SpinBox
+var _stamp_rot: SpinBox
+
+var _export_folder_edit: LineEdit
+var _export_base_edit: LineEdit
 
 
 
@@ -110,7 +122,7 @@ func _build_ui() -> void:
 	_canvas.brush_paint_dragged.connect(_on_brush_paint_dragged)
 	_canvas.brush_paint_released.connect(_on_brush_paint_released)
 	_canvas.recolor_clicked.connect(_on_recolor_clicked)
-	_canvas.stamp_pasted.connect(_on_canvas_stamp_pasted)
+	_canvas.stamp_pos_changed.connect(_on_canvas_stamp_pos_changed)
 	_canvas.slice_action_started.connect(_push_slices_state)
 	scroll.add_child(_canvas)
 
@@ -198,8 +210,14 @@ func _make_toolbar() -> Control:
 	var extract_btn := Button.new()
 	extract_btn.text = "Extract All"
 	extract_btn.tooltip_text = "Export slices to disk"
-	extract_btn.pressed.connect(_on_extract)
+	extract_btn.pressed.connect(func(): _on_extract(false))
 	tb1.add_child(extract_btn)
+	
+	var extract_sel_btn := Button.new()
+	extract_sel_btn.text = "Extract Selected"
+	extract_sel_btn.tooltip_text = "Export ONLY the currently selected slices to disk"
+	extract_sel_btn.pressed.connect(func(): _on_extract(true))
+	tb1.add_child(extract_sel_btn)
 
 	# --- Row 2: Erase tools ---
 	var tb2 := HBoxContainer.new()
@@ -276,14 +294,22 @@ func _make_toolbar() -> Control:
 
 	tb2.add_child(VSeparator.new())
 
-	var stamp_btn := Button.new()
-	stamp_btn.text = "Stamp..."
-	stamp_btn.tooltip_text = "Paste an external PNG onto the canvas"
-	stamp_btn.pressed.connect(func():
-		if _stamp_dialog:
-			_stamp_dialog.popup_centered_ratio(0.6)
+	_stamp_btn = Button.new()
+	_stamp_btn.text = "Stamp..."
+	_stamp_btn.toggle_mode = true
+	_stamp_btn.tooltip_text = "Paste an external PNG onto the canvas"
+	_stamp_btn.toggled.connect(func(pressed: bool):
+		if pressed:
+			if _canvas and _canvas.stamp_tex == null:
+				if _stamp_dialog:
+					_stamp_dialog.popup_centered_ratio(0.6)
+			else:
+				_select_tool("stamp")
+		else:
+			if _canvas and _canvas.stamp_mode:
+				_select_tool("")
 	)
-	tb2.add_child(stamp_btn)
+	tb2.add_child(_stamp_btn)
 
 	tb2.add_child(VSeparator.new())
 
@@ -292,31 +318,57 @@ func _make_toolbar() -> Control:
 	tb2.add_child(brush_size_label)
 
 	_brush_size_spin = SpinBox.new()
-	_brush_size_spin.min_value = 1
-	_brush_size_spin.max_value = 100
-	_brush_size_spin.value = 8
-	_brush_size_spin.step = 1
+	_brush_size_spin.min_value = 0.5
+	_brush_size_spin.max_value = 100.0
+	_brush_size_spin.value = 8.0
+	_brush_size_spin.step = 0.25
 	_brush_size_spin.custom_minimum_size = Vector2(60, 0)
 	_brush_size_spin.tooltip_text = "Brush radius"
 	_brush_size_spin.value_changed.connect(func(val: float):
 		if _canvas != null:
-			_canvas.brush_size = int(val)
+			_canvas.brush_size = float(val)
 			_canvas.queue_redraw()
 	)
 	tb2.add_child(_brush_size_spin)
 	if _canvas != null:
-		_canvas.brush_size = 8
+		_canvas.brush_size = 8.0
+
+	tb2.add_child(VSeparator.new())
+
+	var shape_lbl := Label.new()
+	shape_lbl.text = "Shape:"
+	tb2.add_child(shape_lbl)
+
+	var shape_opt := OptionButton.new()
+	shape_opt.add_item("Circle", 0)
+	shape_opt.add_item("Square", 1)
+	shape_opt.selected = 0
+	shape_opt.item_selected.connect(func(idx: int):
+		if _canvas != null:
+			_canvas.brush_is_square = (idx == 1)
+			_canvas.queue_redraw()
+	)
+	tb2.add_child(shape_opt)
 
 	return tb_outer
 
 func _make_right_panel() -> PanelContainer:
 	var panel := PanelContainer.new()
-	panel.custom_minimum_size = Vector2(220, 0)
+	panel.custom_minimum_size = Vector2(250, 0)
 	panel.size_flags_vertical  = Control.SIZE_EXPAND_FILL
+
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	panel.add_child(scroll)
 
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 5)
-	panel.add_child(vbox)
+	vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.add_child(vbox)
 
 	var list_header := HBoxContainer.new()
 	list_header.add_theme_constant_override("separation", 4)
@@ -354,7 +406,7 @@ func _make_right_panel() -> PanelContainer:
 	_slice_list = ItemList.new()
 	_slice_list.select_mode = ItemList.SELECT_MULTI
 	_slice_list.size_flags_vertical  = Control.SIZE_EXPAND_FILL
-	_slice_list.custom_minimum_size  = Vector2(0, 80)
+	_slice_list.custom_minimum_size  = Vector2(0, 150)
 	_slice_list.item_selected.connect(_on_list_item_selected)
 	vbox.add_child(_slice_list)
 
@@ -364,6 +416,56 @@ func _make_right_panel() -> PanelContainer:
 	_props_box.add_theme_constant_override("separation", 4)
 	_props_box.visible = false
 	vbox.add_child(_props_box)
+
+	# Stamp Properties Box
+	_stamp_props_box = VBoxContainer.new()
+	_stamp_props_box.add_theme_constant_override("separation", 6)
+	_stamp_props_box.visible = false
+	vbox.add_child(_stamp_props_box)
+
+	var stamp_title := Label.new()
+	stamp_title.text = "Stamp Properties"
+	_stamp_props_box.add_child(stamp_title)
+
+	var stamp_grid := GridContainer.new()
+	stamp_grid.columns = 4
+	stamp_grid.add_theme_constant_override("h_separation", 4)
+	stamp_grid.add_theme_constant_override("v_separation", 4)
+	_stamp_props_box.add_child(stamp_grid)
+
+	_stamp_pos_x = _make_stamp_spin_inline("Pos X", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	_stamp_pos_y = _make_stamp_spin_inline("Pos Y", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	
+	_stamp_scale_x = _make_stamp_spin_inline("Scale X", stamp_grid, 0.05, 50.0, 0.05, 1.0)
+	_stamp_scale_y = _make_stamp_spin_inline("Scale Y", stamp_grid, 0.05, 50.0, 0.05, 1.0)
+	
+	_stamp_pivot_x = _make_stamp_spin_inline("Pivot X", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	_stamp_pivot_y = _make_stamp_spin_inline("Pivot Y", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	
+	_stamp_rot = _make_stamp_spin_inline("Rot Deg", stamp_grid, -360.0, 360.0, 1.0, 0.0)
+	
+	# Empty labels to align grid
+	var empty_lbl1 := Label.new()
+	var empty_lbl2 := Label.new()
+	stamp_grid.add_child(empty_lbl1)
+	stamp_grid.add_child(empty_lbl2)
+
+	# Stamp Actions
+	var stamp_actions := HBoxContainer.new()
+	stamp_actions.add_theme_constant_override("separation", 6)
+	_stamp_props_box.add_child(stamp_actions)
+
+	var apply_stamp_btn := Button.new()
+	apply_stamp_btn.text = "Apply Stamp"
+	apply_stamp_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	apply_stamp_btn.pressed.connect(_apply_stamp)
+	stamp_actions.add_child(apply_stamp_btn)
+
+	var cancel_stamp_btn := Button.new()
+	cancel_stamp_btn.text = "Cancel"
+	cancel_stamp_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	cancel_stamp_btn.pressed.connect(_cancel_stamp)
+	stamp_actions.add_child(cancel_stamp_btn)
 
 	var props_title := Label.new()
 	props_title.text = "Selected Slice"
@@ -478,6 +580,30 @@ func _make_right_panel() -> PanelContainer:
 	_anim_name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	sf_box.add_child(_anim_name_edit)
 
+	var naming_grid := GridContainer.new()
+	naming_grid.columns = 2
+	naming_grid.add_theme_constant_override("h_separation", 4)
+	naming_grid.add_theme_constant_override("v_separation", 4)
+	vbox.add_child(naming_grid)
+	
+	var folder_lbl := Label.new()
+	folder_lbl.text = "Folder:"
+	naming_grid.add_child(folder_lbl)
+	
+	_export_folder_edit = LineEdit.new()
+	_export_folder_edit.placeholder_text = "slices_folder"
+	_export_folder_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	naming_grid.add_child(_export_folder_edit)
+	
+	var base_lbl := Label.new()
+	base_lbl.text = "Base File:"
+	naming_grid.add_child(base_lbl)
+	
+	_export_base_edit = LineEdit.new()
+	_export_base_edit.placeholder_text = "file_base"
+	_export_base_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	naming_grid.add_child(_export_base_edit)
+
 	vbox.add_child(HSeparator.new())
 
 	var snap_title := Label.new()
@@ -552,6 +678,25 @@ func _make_spin(lbl_text: String, parent: Control) -> SpinBox:
 	parent.add_child(sb)
 	return sb
 
+func _make_stamp_spin_inline(lbl_text: String, parent: Control, min_val: float, max_val: float, step_val: float, default_val: float) -> SpinBox:
+	var lbl := Label.new()
+	lbl.text = lbl_text
+	lbl.custom_minimum_size = Vector2(45, 0)
+	parent.add_child(lbl)
+	
+	var sb := SpinBox.new()
+	sb.min_value = min_val
+	sb.max_value = max_val
+	sb.step = step_val
+	sb.value = default_val
+	sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(sb)
+	
+	sb.value_changed.connect(func(_v: float) -> void:
+		_on_stamp_prop_changed()
+	)
+	return sb
+
 # --- Dialog setup ---
 
 func _setup_file_dialog() -> void:
@@ -559,7 +704,11 @@ func _setup_file_dialog() -> void:
 	_file_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_file_dialog.access = FileDialog.ACCESS_RESOURCES
 	_file_dialog.title = "Select Texture"
-	_file_dialog.add_filter("*.png, *.jpg, *.jpeg, *.webp, *.bmp, *.svg", "Image Files")
+	_file_dialog.add_filter("*.png", "PNG Images")
+	_file_dialog.add_filter("*.jpg", "JPEG Images")
+	_file_dialog.add_filter("*.jpeg", "JPEG Images")
+	_file_dialog.add_filter("*.webp", "WebP Images")
+	_file_dialog.add_filter("*.tres", "Godot Resource Textures")
 	_file_dialog.file_selected.connect(_load_texture)
 	add_child(_file_dialog)
 
@@ -568,8 +717,15 @@ func _setup_stamp_dialog() -> void:
 	_stamp_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_stamp_dialog.access = FileDialog.ACCESS_RESOURCES
 	_stamp_dialog.title = "Select Stamp Image"
-	_stamp_dialog.add_filter("*.png, *.jpg, *.jpeg, *.webp, *.bmp, *.svg", "Image Files")
+	_stamp_dialog.add_filter("*.png", "PNG Images")
+	_stamp_dialog.add_filter("*.jpg", "JPEG Images")
+	_stamp_dialog.add_filter("*.jpeg", "JPEG Images")
+	_stamp_dialog.add_filter("*.webp", "WebP Images")
 	_stamp_dialog.file_selected.connect(_load_stamp_image)
+	_stamp_dialog.canceled.connect(func():
+		if _stamp_btn:
+			_stamp_btn.button_pressed = false
+	)
 	add_child(_stamp_dialog)
 
 func _setup_material_dialog() -> void:
@@ -577,7 +733,8 @@ func _setup_material_dialog() -> void:
 	_material_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
 	_material_dialog.access = FileDialog.ACCESS_RESOURCES
 	_material_dialog.title = "Select Shader/Material Resource"
-	_material_dialog.add_filter("*.tres, *.material", "Material Files")
+	_material_dialog.add_filter("*.tres", "Material Resources")
+	_material_dialog.add_filter("*.material", "Material Resources")
 	_material_dialog.file_selected.connect(_assign_material_to_selected)
 	add_child(_material_dialog)
 
@@ -730,19 +887,51 @@ func _on_clear() -> void:
 	if _preview_player:
 		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
-func _on_extract() -> void:
+func _on_extract(only_selected: bool = false) -> void:
 	if not _current_tex or _canvas.rects.is_empty():
 		return
+		
+	var export_rects: Array[Rect2] = []
+	var export_names: Array[String] = []
+	var export_materials: Array[String] = []
+	
+	if only_selected and not _canvas.selected_indices.is_empty():
+		var sel_sorted = _canvas.selected_indices.duplicate()
+		sel_sorted.sort()
+		for idx in sel_sorted:
+			if idx >= 0 and idx < _canvas.rects.size():
+				export_rects.append(_canvas.rects[idx])
+				export_names.append(_canvas.slice_names[idx])
+				export_materials.append(_canvas.slice_materials[idx])
+	else:
+		export_rects = _canvas.rects.duplicate()
+		export_names = _canvas.slice_names.duplicate()
+		export_materials = _canvas.slice_materials.duplicate()
+		
+	if export_rects.is_empty():
+		return
+
 	var a_name := "default"
 	if _anim_name_edit and _anim_name_edit.text.strip_edges() != "":
 		a_name = _anim_name_edit.text.strip_edges()
-	_Extractor.extract(_current_tex, _canvas.rects,
+		
+	var custom_folder := ""
+	if _export_folder_edit and _export_folder_edit.text.strip_edges() != "":
+		custom_folder = _export_folder_edit.text.strip_edges()
+		
+	var custom_base := ""
+	if _export_base_edit and _export_base_edit.text.strip_edges() != "":
+		custom_base = _export_base_edit.text.strip_edges()
+		
+	_Extractor.extract(_current_tex, export_rects,
 		_chk_png.button_pressed,
 		_chk_atlas.button_pressed,
 		_chk_spriteframes.button_pressed,
-		_current_tex_path, _canvas.slice_names,
+		_current_tex_path, export_names,
 		a_name,
-		_canvas.slice_materials)
+		export_materials,
+		custom_folder,
+		custom_base)
 
 func _select_tool(tool_name: String) -> void:
 	var wand_on := (tool_name == "wand")
@@ -757,6 +946,10 @@ func _select_tool(tool_name: String) -> void:
 		_recolor_btn.set_pressed_no_signal(recolor_on)
 	if _paint_btn:
 		_paint_btn.set_pressed_no_signal(paint_on)
+	if _stamp_btn:
+		_stamp_btn.set_pressed_no_signal(stamp_on)
+		
+	_update_button_modulations()
 		
 	if _canvas:
 		_canvas.erase_mode = wand_on
@@ -767,6 +960,24 @@ func _select_tool(tool_name: String) -> void:
 		if not stamp_on:
 			_canvas.stamp_tex = null
 		_canvas.queue_redraw()
+		
+	if _stamp_props_box != null:
+		_stamp_props_box.visible = stamp_on
+	if _props_box != null:
+		_props_box.visible = not stamp_on and not _canvas.selected_indices.is_empty() if _canvas else false
+
+func _update_button_modulations() -> void:
+	var active_color := Color(0.3, 0.8, 1.0, 1.0)
+	var normal_color := Color.WHITE
+	
+	_wand_btn.self_modulate = active_color if _wand_btn.button_pressed else normal_color
+	_brush_erase_btn.self_modulate = active_color if _brush_erase_btn.button_pressed else normal_color
+	if _recolor_btn:
+		_recolor_btn.self_modulate = active_color if _recolor_btn.button_pressed else normal_color
+	if _paint_btn:
+		_paint_btn.self_modulate = active_color if _paint_btn.button_pressed else normal_color
+	if _stamp_btn:
+		_stamp_btn.self_modulate = active_color if _stamp_btn.button_pressed else normal_color
 
 func _on_wand_toggled(toggled: bool) -> void:
 	_select_tool("wand" if toggled else "")
@@ -781,9 +992,31 @@ func _on_paint_toggled(toggled: bool) -> void:
 	_select_tool("paint" if toggled else "")
 
 func _load_stamp_image(path: String) -> void:
-	var tex = load(path)
-	if tex is Texture2D and _canvas:
+	var tex := load(path) as Texture2D
+	if tex and _canvas and _current_tex:
 		_canvas.stamp_tex = tex
+		
+		# Set default transforms based on current texture center
+		var base_img := _current_tex.get_image()
+		var center_x: float = base_img.get_width() / 2.0
+		var center_y: float = base_img.get_height() / 2.0
+		var pivot_x: float = tex.get_width() / 2.0
+		var pivot_y: float = tex.get_height() / 2.0
+		
+		_canvas.stamp_pos = Vector2(center_x, center_y)
+		_canvas.stamp_scale = Vector2.ONE
+		_canvas.stamp_rotation = 0.0
+		_canvas.stamp_pivot = Vector2(pivot_x, pivot_y)
+		
+		# Update UI
+		if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(center_x)
+		if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(center_y)
+		if _stamp_scale_x: _stamp_scale_x.set_value_no_signal(1.0)
+		if _stamp_scale_y: _stamp_scale_y.set_value_no_signal(1.0)
+		if _stamp_pivot_x: _stamp_pivot_x.set_value_no_signal(pivot_x)
+		if _stamp_pivot_y: _stamp_pivot_y.set_value_no_signal(pivot_y)
+		if _stamp_rot: _stamp_rot.set_value_no_signal(0.0)
+		
 		_select_tool("stamp")
 
 func _assign_material_to_selected(path: String) -> void:
@@ -800,25 +1033,48 @@ func _assign_material_to_selected(path: String) -> void:
 	_update_props()
 	_refresh_list()
 
-func _on_canvas_stamp_pasted(img_pos: Vector2i, stamp_tex: Texture2D) -> void:
-	if not _current_tex or _current_tex_path.is_empty() or not stamp_tex:
+func _on_canvas_stamp_pos_changed(pos: Vector2) -> void:
+	if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(pos.x)
+	if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(pos.y)
+
+func _on_stamp_prop_changed() -> void:
+	if not _canvas or not _canvas.stamp_tex:
+		return
+	_canvas.stamp_pos = Vector2(_stamp_pos_x.value, _stamp_pos_y.value)
+	_canvas.stamp_scale = Vector2(_stamp_scale_x.value, _stamp_scale_y.value)
+	_canvas.stamp_rotation = deg_to_rad(_stamp_rot.value)
+	_canvas.stamp_pivot = Vector2(_stamp_pivot_x.value, _stamp_pivot_y.value)
+	_canvas.queue_redraw()
+
+func _apply_stamp() -> void:
+	if not _current_tex or _current_tex_path.is_empty() or not _canvas.stamp_tex:
 		return
 	_push_image_state()
 	_ensure_edited_path()
 	var base_img := _current_tex.get_image()
-	var stamp_img := stamp_tex.get_image()
-	var result := _BgRemover.paste_stamp(base_img, stamp_img, img_pos.x, img_pos.y)
+	var stamp_img := _canvas.stamp_tex.get_image()
+	
+	var result := _BgRemover.paste_stamp_transformed(
+		base_img,
+		stamp_img,
+		_canvas.stamp_pos,
+		_canvas.stamp_scale,
+		_canvas.stamp_rotation,
+		_canvas.stamp_pivot
+	)
+	
 	if result == null or result.is_empty():
 		return
 		
-	if _current_tex is ImageTexture:
-		_current_tex.update(result)
-		_canvas.queue_redraw()
-	else:
-		var new_tex := ImageTexture.create_from_image(result)
-		_current_tex = new_tex
-		_canvas.update_texture(new_tex)
+	var new_tex := ImageTexture.create_from_image(result)
+	_current_tex = new_tex
+	_canvas.update_texture(new_tex)
 	_save_edited_texture()
+	
+	_select_tool("")
+
+func _cancel_stamp() -> void:
+	_select_tool("")
 
 func _on_brush_erase_clicked(img_pos: Vector2i) -> void:
 	_push_image_state()
@@ -838,17 +1094,14 @@ func _do_brush_erase(img_pos: Vector2i) -> void:
 	var b_size: int = 8
 	if _brush_size_spin != null:
 		b_size = int(_brush_size_spin.value)
-	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, b_size)
+	var is_sq: bool = _canvas.brush_is_square if _canvas else false
+	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, b_size, is_sq)
 	if result == null or result.is_empty():
 		return
 
-	if _current_tex is ImageTexture:
-		_current_tex.update(result)
-		_canvas.queue_redraw()
-	else:
-		var new_tex := ImageTexture.create_from_image(result)
-		_current_tex = new_tex
-		_canvas.update_texture(new_tex)
+	var new_tex := ImageTexture.create_from_image(result)
+	_current_tex = new_tex
+	_canvas.update_texture(new_tex)
 
 func _on_brush_paint_clicked(img_pos: Vector2i) -> void:
 	_push_image_state()
@@ -869,17 +1122,14 @@ func _do_brush_paint(img_pos: Vector2i) -> void:
 	if _brush_size_spin != null:
 		b_size = int(_brush_size_spin.value)
 	var col := _color_picker.color if _color_picker else Color.WHITE
-	var result := _BgRemover.brush_paint(src_img, img_pos.x, img_pos.y, b_size, col)
+	var is_sq: bool = _canvas.brush_is_square if _canvas else false
+	var result := _BgRemover.brush_paint(src_img, img_pos.x, img_pos.y, b_size, col, is_sq)
 	if result == null or result.is_empty():
 		return
 
-	if _current_tex is ImageTexture:
-		_current_tex.update(result)
-		_canvas.queue_redraw()
-	else:
-		var new_tex := ImageTexture.create_from_image(result)
-		_current_tex = new_tex
-		_canvas.update_texture(new_tex)
+	var new_tex := ImageTexture.create_from_image(result)
+	_current_tex = new_tex
+	_canvas.update_texture(new_tex)
 
 func _on_recolor_clicked(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
@@ -975,7 +1225,9 @@ func _on_remove_bg() -> void:
 		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
 	if Engine.is_editor_hint():
-		EditorInterface.get_resource_filesystem().scan()
+		var fs := EditorInterface.get_resource_filesystem()
+		if fs:
+			fs.update_file(res_out)
 
 func _on_delete_selected() -> void:
 	if _canvas.selected_indices.is_empty():

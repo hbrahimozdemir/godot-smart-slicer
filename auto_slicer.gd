@@ -8,14 +8,14 @@ static func slice(image: Image, alpha_threshold: float = 0.1, min_size: Vector2i
 
 	var width: int = image.get_width()
 	var height: int = image.get_height()
-	var visited: Array = []
+	var visited := PackedByteArray()
 	visited.resize(width * height)
-	visited.fill(false)
+	visited.fill(0)
 
 	for y in range(height):
 		for x in range(width):
 			var idx: int = y * width + x
-			if visited[idx]: 
+			if visited[idx] != 0: 
 				continue
 
 			var pixel: Color = image.get_pixel(x, y)
@@ -24,12 +24,13 @@ static func slice(image: Image, alpha_threshold: float = 0.1, min_size: Vector2i
 				if bounds.size.x >= min_size.x and bounds.size.y >= min_size.y:
 					rects.append(bounds)
 			else:
-				visited[idx] = true
+				visited[idx] = 1
 
 	return rects
 
-static func _flood_fill(image: Image, start_x: int, start_y: int, width: int, height: int, visited: Array, alpha_threshold: float) -> Rect2:
+static func _flood_fill(image: Image, start_x: int, start_y: int, width: int, height: int, visited: PackedByteArray, alpha_threshold: float) -> Rect2:
 	var queue: Array = [Vector2i(start_x, start_y)]
+	visited[start_y * width + start_x] = 1
 	var min_x: int = start_x
 	var max_x: int = start_x
 	var min_y: int = start_y
@@ -42,10 +43,6 @@ static func _flood_fill(image: Image, start_x: int, start_y: int, width: int, he
 
 		var x: int = p.x
 		var y: int = p.y
-		var idx: int = y * width + x
-		if visited[idx]: 
-			continue
-		visited[idx] = true
 
 		var c: Color = image.get_pixel(x, y)
 		if c.a > alpha_threshold:
@@ -58,13 +55,24 @@ static func _flood_fill(image: Image, start_x: int, start_y: int, width: int, he
 			if y > max_y: 
 				max_y = y
 
-			if x > 0 and not visited[y * width + (x - 1)]: 
+			var idx_l := y * width + (x - 1)
+			if x > 0 and visited[idx_l] == 0: 
+				visited[idx_l] = 1
 				queue.append(Vector2i(x - 1, y))
-			if x < width - 1 and not visited[y * width + (x + 1)]: 
+
+			var idx_r := y * width + (x + 1)
+			if x < width - 1 and visited[idx_r] == 0: 
+				visited[idx_r] = 1
 				queue.append(Vector2i(x + 1, y))
-			if y > 0 and not visited[(y - 1) * width + x]: 
+
+			var idx_u := (y - 1) * width + x
+			if y > 0 and visited[idx_u] == 0: 
+				visited[idx_u] = 1
 				queue.append(Vector2i(x, y - 1))
-			if y < height - 1 and not visited[(y + 1) * width + x]: 
+
+			var idx_d := (y + 1) * width + x
+			if y < height - 1 and visited[idx_d] == 0: 
+				visited[idx_d] = 1
 				queue.append(Vector2i(x, y + 1))
 
 	return Rect2(min_x, min_y, max_x - min_x + 1, max_y - min_y + 1)

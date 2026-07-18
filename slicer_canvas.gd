@@ -12,7 +12,7 @@ signal brush_paint_clicked(img_pos: Vector2i)
 signal brush_paint_dragged(img_pos: Vector2i)
 signal brush_paint_released()
 signal recolor_clicked(img_pos: Vector2i)
-signal stamp_pasted(img_pos: Vector2i, stamp_tex: Texture2D)
+signal stamp_pos_changed(pos: Vector2)
 signal slice_action_started()
 
 var texture: Texture2D = null
@@ -32,6 +32,12 @@ var paint_mode: bool = false
 var recolor_mode: bool = false
 var stamp_mode: bool = false
 var stamp_tex: Texture2D = null
+var stamp_pos: Vector2 = Vector2.ZERO
+var stamp_scale: Vector2 = Vector2.ONE
+var stamp_rotation: float = 0.0
+var stamp_pivot: Vector2 = Vector2.ZERO
+var _stamp_dragging: bool = false
+var _stamp_drag_offset: Vector2 = Vector2.ZERO
 var paint_color: Color = Color.WHITE
 var tolerance: float = 0.18
 var preview_mask: Array[Vector2i] = []
@@ -39,13 +45,17 @@ var last_preview_pixel: Vector2i = Vector2i(-1, -1)
 var _brush_erasing: bool = false
 var _brush_painting: bool = false
 
-var brush_size: int = 8
+var brush_size: float = 8.0
+var brush_is_square: bool = false
 var hover_mouse_pos: Vector2 = Vector2.ZERO
 var is_hovering: bool = false
 
 # Checkerboard cache
 var _checker_tex: ImageTexture = null
 var _checker_size: Vector2i = Vector2i.ZERO
+
+var _preview_mask_tex: ImageTexture = null
+var _preview_mask_img: Image = null
 
 # Drag/Create state
 var _dragging: bool = false
@@ -78,6 +88,7 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_MOUSE_EXIT:
 		is_hovering = false
 		preview_mask.clear()
+		_preview_mask_tex = null
 		last_preview_pixel = Vector2i(-1, -1)
 		queue_redraw()
 
@@ -224,21 +235,34 @@ func _draw() -> void:
 		var rad: float = float(brush_size) * zoom
 		var col := paint_color if paint_mode else Color(1.0, 0.3, 0.3, 0.75)
 		col.a = 0.8
-		draw_arc(hover_mouse_pos, rad, 0.0, TAU, 32, col, 1.5)
+		if brush_is_square:
+			var size_val := rad * 2.0
+			var rect := Rect2(hover_mouse_pos - Vector2(rad, rad), Vector2(size_val, size_val))
+			draw_rect(rect, col, false, 1.5)
+		else:
+			draw_arc(hover_mouse_pos, rad, 0.0, TAU, 32, col, 1.5)
 
 	# Draw magic wand preview mask
-	if (erase_mode or recolor_mode) and is_hovering and not preview_mask.is_empty():
-		var mask_color := Color(0.3, 0.7, 1.0, 0.4) if erase_mode else paint_color
-		mask_color.a = 0.45
-		var psz := Vector2(zoom, zoom)
-		for p in preview_mask:
-			draw_rect(Rect2(Vector2(p) * zoom, psz), mask_color)
+	if (erase_mode or recolor_mode) and is_hovering and _preview_mask_tex:
+		var overlay_size := Vector2(texture.get_width(), texture.get_height()) * zoom
+		draw_texture_rect(_preview_mask_tex, Rect2(Vector2.ZERO, overlay_size), false)
 
 	# Draw stamp preview
-	if stamp_mode and stamp_tex and is_hovering:
-		var sz := Vector2(stamp_tex.get_width(), stamp_tex.get_height()) * zoom
-		var dest_pos := hover_mouse_pos - sz / 2.0
-		draw_texture_rect(stamp_tex, Rect2(dest_pos, sz), false, Color(1.0, 1.0, 1.0, 0.6))
+	if stamp_mode and stamp_tex:
+		var draw_pos := stamp_pos * zoom
+		var draw_scale := stamp_scale * zoom
+		var draw_pivot := stamp_pivot * zoom
+		draw_set_transform(draw_pos, stamp_rotation, draw_scale)
+		
+		# Draw stamp texture centered on pivot
+		draw_texture(stamp_tex, -stamp_pivot, Color(1.0, 1.0, 1.0, 0.75))
+		
+		# Draw selection border
+		var rect := Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height()))
+		draw_rect(rect, Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
+		
+		# Restore identity transform
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
@@ -347,7 +371,7 @@ func _gui_input(event: InputEvent) -> void:
 			return
 
 		_on_mouse_motion(event.position)
-		if _dragging or _selecting:
+		if _dragging or _selecting or _stamp_dragging:
 			accept_event()
 			return
 
@@ -495,8 +519,18 @@ func _on_lmb_down(pos: Vector2) -> void:
 
 	if stamp_mode and stamp_tex:
 		var img_p = _img(pos)
-		stamp_pasted.emit(Vector2i(img_p), stamp_tex)
-		return
+		var xform := Transform2D()
+		xform = xform.translated(stamp_pos)
+		xform = xform.rotated(stamp_rotation)
+		xform = xform.scaled(stamp_scale)
+		xform = xform.translated(-stamp_pivot)
+		var inv: Transform2D = xform.affine_inverse()
+		var src_pos: Vector2 = inv * img_p
+		if src_pos.x >= 0 and src_pos.x < stamp_tex.get_width() and src_pos.y >= 0 and src_pos.y < stamp_tex.get_height():
+			_stamp_dragging = true
+			_stamp_drag_offset = stamp_pos - img_p
+			get_viewport().set_input_as_handled()
+			return
 
 	if brush_erase_mode:
 		_brush_erasing = true
@@ -550,6 +584,10 @@ func _on_lmb_down(pos: Vector2) -> void:
 	queue_redraw()
 
 func _on_lmb_up(pos: Vector2) -> void:
+	if _stamp_dragging:
+		_stamp_dragging = false
+		return
+
 	if _brush_erasing:
 		_brush_erasing = false
 		brush_erase_released.emit()
@@ -641,6 +679,13 @@ func _on_mouse_motion(pos: Vector2) -> void:
 			_recalculate_wand_preview(img_p)
 			queue_redraw()
 
+	if _stamp_dragging:
+		var img_p = _img(pos)
+		stamp_pos = img_p + _stamp_drag_offset
+		stamp_pos_changed.emit(stamp_pos)
+		queue_redraw()
+		return
+
 	if _brush_erasing:
 		brush_erase_dragged.emit(Vector2i(_img(pos)))
 		return
@@ -706,33 +751,33 @@ func _on_mouse_motion(pos: Vector2) -> void:
 func _recalculate_wand_preview(img_p: Vector2i) -> void:
 	preview_mask.clear()
 	if not texture:
+		_preview_mask_tex = null
 		return
 	var img := texture.get_image()
 	if not img or img.is_empty():
+		_preview_mask_tex = null
 		return
 	var W := img.get_width()
 	var H := img.get_height()
 	if img_p.x < 0 or img_p.y < 0 or img_p.x >= W or img_p.y >= H:
+		_preview_mask_tex = null
 		return
 
 	var bg := img.get_pixel(img_p.x, img_p.y)
 	if bg.a < 0.01:
+		_preview_mask_tex = null
 		return
 
 	var visited := {}
 	var queue := [img_p]
 	var head := 0
+	visited[img_p.y * W + img_p.x] = true
 	
 	const MAX_PREVIEW = 8000
 	
 	while head < queue.size() and queue.size() < MAX_PREVIEW:
 		var p: Vector2i = queue[head]
 		head += 1
-		
-		var idx := p.y * W + p.x
-		if idx in visited:
-			continue
-		visited[idx] = true
 		preview_mask.append(p)
 		
 		# 4-way check
@@ -746,6 +791,7 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 			if n.x >= 0 and n.x < W and n.y >= 0 and n.y < H:
 				var n_idx: int = n.y * W + n.x
 				if not n_idx in visited:
+					visited[n_idx] = true
 					var c: Color = img.get_pixel(n.x, n.y)
 					var dr: float = c.r - bg.r
 					var dg: float = c.g - bg.g
@@ -753,6 +799,21 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 					var dist: float = sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
 					if dist <= tolerance:
 						queue.append(n)
+
+	if not preview_mask.is_empty():
+		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color
+		mask_color.a = 0.45
+		
+		_preview_mask_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
+		for p in preview_mask:
+			_preview_mask_img.set_pixel(p.x, p.y, mask_color)
+			
+		if _preview_mask_tex == null:
+			_preview_mask_tex = ImageTexture.create_from_image(_preview_mask_img)
+		else:
+			_preview_mask_tex.update(_preview_mask_img)
+	else:
+		_preview_mask_tex = null
 
 func _delete_rect(idx: int) -> void:
 	rects.remove_at(idx)
