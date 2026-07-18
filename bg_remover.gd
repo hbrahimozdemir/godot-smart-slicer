@@ -264,31 +264,98 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 
 	return img
 
-static func brush_erase(image: Image, center_x: int, center_y: int, radius: int) -> Image:
+static func brush_erase(image: Image, center_x: int, center_y: int, radius: float, is_square: bool = false) -> Image:
 	image.convert(Image.FORMAT_RGBA8)
 	var W: int = image.get_width()
 	var H: int = image.get_height()
+	var r_ceil := int(ceil(radius))
 
-	for y in range(max(0, center_y - radius), min(H, center_y + radius + 1)):
-		for x in range(max(0, center_x - radius), min(W, center_x + radius + 1)):
-			var dx := x - center_x
-			var dy := y - center_y
-			if dx*dx + dy*dy <= radius*radius:
+	for y in range(max(0, center_y - r_ceil), min(H, center_y + r_ceil + 1)):
+		for x in range(max(0, center_x - r_ceil), min(W, center_x + r_ceil + 1)):
+			if is_square:
 				image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
+			else:
+				var dx := x - center_x
+				var dy := y - center_y
+				if float(dx*dx + dy*dy) <= radius*radius:
+					image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 	return image
 
-static func brush_paint(image: Image, center_x: int, center_y: int, radius: int, color: Color) -> Image:
+static func brush_paint(image: Image, center_x: int, center_y: int, radius: float, color: Color, is_square: bool = false) -> Image:
 	image.convert(Image.FORMAT_RGBA8)
 	var W: int = image.get_width()
 	var H: int = image.get_height()
+	var r_ceil := int(ceil(radius))
 
-	for y in range(max(0, center_y - radius), min(H, center_y + radius + 1)):
-		for x in range(max(0, center_x - radius), min(W, center_x + radius + 1)):
-			var dx := x - center_x
-			var dy := y - center_y
-			if dx*dx + dy*dy <= radius*radius:
+	for y in range(max(0, center_y - r_ceil), min(H, center_y + r_ceil + 1)):
+		for x in range(max(0, center_x - r_ceil), min(W, center_x + r_ceil + 1)):
+			if is_square:
 				image.set_pixel(x, y, color)
+			else:
+				var dx := x - center_x
+				var dy := y - center_y
+				if float(dx*dx + dy*dy) <= radius*radius:
+					image.set_pixel(x, y, color)
 	return image
+
+static func paste_stamp_transformed(
+	base_image: Image,
+	stamp_image: Image,
+	pos: Vector2,
+	scale: Vector2,
+	rotation: float,
+	pivot: Vector2
+) -> Image:
+	base_image.convert(Image.FORMAT_RGBA8)
+	stamp_image.convert(Image.FORMAT_RGBA8)
+	
+	var dst_w := base_image.get_width()
+	var dst_h := base_image.get_height()
+	var src_w := stamp_image.get_width()
+	var src_h := stamp_image.get_height()
+	
+	var xform := Transform2D()
+	xform = xform.translated(pos)
+	xform = xform.rotated(rotation)
+	xform = xform.scaled(scale)
+	xform = xform.translated(-pivot)
+	
+	var inv := xform.affine_inverse()
+	
+	var corners = [
+		xform * Vector2(0, 0),
+		xform * Vector2(src_w, 0),
+		xform * Vector2(0, src_h),
+		xform * Vector2(src_w, src_h)
+	]
+	var min_x = dst_w
+	var max_x = 0
+	var min_y = dst_h
+	var max_y = 0
+	for c in corners:
+		min_x = min(min_x, int(floor(c.x)))
+		max_x = max(max_x, int(ceil(c.x)))
+		min_y = min(min_y, int(floor(c.y)))
+		max_y = max(max_y, int(ceil(c.y)))
+		
+	min_x = clamp(min_x, 0, dst_w - 1)
+	max_x = clamp(max_x, 0, dst_w - 1)
+	min_y = clamp(min_y, 0, dst_h - 1)
+	max_y = clamp(max_y, 0, dst_h - 1)
+	
+	for y in range(min_y, max_y + 1):
+		for x in range(min_x, max_x + 1):
+			var src_pos := inv * Vector2(x, y)
+			var sx := int(round(src_pos.x))
+			var sy := int(round(src_pos.y))
+			if sx >= 0 and sx < src_w and sy >= 0 and sy < src_h:
+				var src_color := stamp_image.get_pixel(sx, sy)
+				if src_color.a > 0.0:
+					var dst_color := base_image.get_pixel(x, y)
+					var blended_color := dst_color.blend(src_color)
+					base_image.set_pixel(x, y, blended_color)
+					
+	return base_image
 
 static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_color: Color, tolerance: float) -> Image:
 	var img: Image = image.duplicate()
