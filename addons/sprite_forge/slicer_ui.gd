@@ -131,9 +131,9 @@ func _build_ui() -> void:
 
 func _make_toolbar() -> Control:
 	var tb_outer := VBoxContainer.new()
-	tb_outer.add_theme_constant_override("separation", 2)
+	tb_outer.add_theme_constant_override("separation", 4)
 
-	# --- Row 1: File, Slice, Undo/Redo, Zoom ---
+	# --- Row 1: File Selection & Zoom ---
 	var tb1 := HBoxContainer.new()
 	tb1.add_theme_constant_override("separation", 4)
 	tb_outer.add_child(tb1)
@@ -148,45 +148,6 @@ func _make_toolbar() -> Control:
 	_path_label.placeholder_text      = "No texture selected"
 	_path_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tb1.add_child(_path_label)
-
-	tb1.add_child(VSeparator.new())
-
-	var auto_btn := Button.new()
-	auto_btn.text = "Auto Slice"
-	auto_btn.tooltip_text = "Detect sprites via flood-fill"
-	auto_btn.pressed.connect(_on_auto_slice)
-	tb1.add_child(auto_btn)
-
-	var grid_btn := Button.new()
-	grid_btn.text = "Grid Slice..."
-	grid_btn.tooltip_text = "Slice into a uniform grid"
-	grid_btn.pressed.connect(func():
-		if _grid_dialog:
-			_grid_dialog.popup_centered()
-	)
-	tb1.add_child(grid_btn)
-
-	var clear_btn := Button.new()
-	clear_btn.text = "Clear"
-	clear_btn.tooltip_text = "Remove all slices"
-	clear_btn.pressed.connect(_on_clear)
-	tb1.add_child(clear_btn)
-
-	tb1.add_child(VSeparator.new())
-
-	_undo_btn = Button.new()
-	_undo_btn.text = "Undo"
-	_undo_btn.tooltip_text = "Undo last action (Ctrl+Z)"
-	_undo_btn.disabled = true
-	_undo_btn.pressed.connect(_undo)
-	tb1.add_child(_undo_btn)
-
-	_redo_btn = Button.new()
-	_redo_btn.text = "Redo"
-	_redo_btn.tooltip_text = "Redo (Ctrl+Y / Ctrl+Shift+Z)"
-	_redo_btn.disabled = true
-	_redo_btn.pressed.connect(_redo)
-	tb1.add_child(_redo_btn)
 
 	tb1.add_child(VSeparator.new())
 
@@ -208,32 +169,76 @@ func _make_toolbar() -> Control:
 	zplus.pressed.connect(func(): _canvas.set_zoom(_zoom * 1.25))
 	tb1.add_child(zplus)
 
+	# --- Row 2: Slice, History, and Export ---
+	var tb2 := HBoxContainer.new()
+	tb2.add_theme_constant_override("separation", 4)
+	tb_outer.add_child(tb2)
+
+	var auto_btn := Button.new()
+	auto_btn.text = "Auto Slice"
+	auto_btn.tooltip_text = "Detect sprites via flood-fill"
+	auto_btn.pressed.connect(_on_auto_slice)
+	tb2.add_child(auto_btn)
+
+	var grid_btn := Button.new()
+	grid_btn.text = "Grid Slice..."
+	grid_btn.tooltip_text = "Slice into a uniform grid"
+	grid_btn.pressed.connect(func():
+		if _grid_dialog:
+			_grid_dialog.popup_centered()
+	)
+	tb2.add_child(grid_btn)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "Clear"
+	clear_btn.tooltip_text = "Remove all slices"
+	clear_btn.pressed.connect(_on_clear)
+	tb2.add_child(clear_btn)
+
+	tb2.add_child(VSeparator.new())
+
+	_undo_btn = Button.new()
+	_undo_btn.text = "Undo"
+	_undo_btn.tooltip_text = "Undo last action (Ctrl+Z)"
+	_undo_btn.disabled = true
+	_undo_btn.pressed.connect(_undo)
+	tb2.add_child(_undo_btn)
+
+	_redo_btn = Button.new()
+	_redo_btn.text = "Redo"
+	_redo_btn.tooltip_text = "Redo (Ctrl+Y / Ctrl+Shift+Z)"
+	_redo_btn.disabled = true
+	_redo_btn.pressed.connect(_redo)
+	tb2.add_child(_redo_btn)
+
+	tb2.add_child(VSeparator.new())
+
 	var extract_btn := Button.new()
 	extract_btn.text = "Extract All"
 	extract_btn.tooltip_text = "Export slices to disk"
 	extract_btn.pressed.connect(func(): _on_extract(false))
-	tb1.add_child(extract_btn)
+	tb2.add_child(extract_btn)
 	
 	var extract_sel_btn := Button.new()
 	extract_sel_btn.text = "Extract Selected"
 	extract_sel_btn.tooltip_text = "Export ONLY the currently selected slices to disk"
 	extract_sel_btn.pressed.connect(func(): _on_extract(true))
-	tb1.add_child(extract_sel_btn)
+	tb2.add_child(extract_sel_btn)
 
-	# --- Row 2: Erase tools ---
-	var tb2 := HBoxContainer.new()
-	tb2.add_theme_constant_override("separation", 4)
-	tb_outer.add_child(tb2)
+	# --- Row 3: Editing, Painting, and Erasing ---
+	var tb3 := HBoxContainer.new()
+	tb3.add_theme_constant_override("separation", 4)
+	tb_outer.add_child(tb3)
 
 	var remove_bg_btn := Button.new()
 	remove_bg_btn.text = "Remove BG"
 	remove_bg_btn.tooltip_text = "Remove background color using flood-fill"
 	remove_bg_btn.pressed.connect(_on_remove_bg)
-	tb2.add_child(remove_bg_btn)
+	tb3.add_child(remove_bg_btn)
 
 	var tol_label := Label.new()
 	tol_label.text = "Tol:"
-	tb2.add_child(tol_label)
+	tb3.add_child(tol_label)
 
 	var tol_spin := SpinBox.new()
 	tol_spin.min_value = 1
@@ -248,39 +253,39 @@ func _make_toolbar() -> Control:
 		if _canvas:
 			_canvas.tolerance = _bg_tolerance
 	)
-	tb2.add_child(tol_spin)
+	tb3.add_child(tol_spin)
 
-	tb2.add_child(VSeparator.new())
+	tb3.add_child(VSeparator.new())
 
 	_wand_btn = Button.new()
 	_wand_btn.text = "Magic Wand Erase"
 	_wand_btn.toggle_mode = true
 	_wand_btn.tooltip_text = "Click to erase matching color regions"
 	_wand_btn.toggled.connect(_on_wand_toggled)
-	tb2.add_child(_wand_btn)
+	tb3.add_child(_wand_btn)
 
 	_brush_erase_btn = Button.new()
 	_brush_erase_btn.text = "Brush Erase"
 	_brush_erase_btn.toggle_mode = true
 	_brush_erase_btn.tooltip_text = "Click and drag to erase pixels"
 	_brush_erase_btn.toggled.connect(_on_brush_toggled)
-	tb2.add_child(_brush_erase_btn)
+	tb3.add_child(_brush_erase_btn)
 
-	tb2.add_child(VSeparator.new())
+	tb3.add_child(VSeparator.new())
 
 	_recolor_btn = Button.new()
 	_recolor_btn.text = "Magic Wand Recolor"
 	_recolor_btn.toggle_mode = true
 	_recolor_btn.tooltip_text = "Click to recolor matching color regions"
 	_recolor_btn.toggled.connect(_on_recolor_toggled)
-	tb2.add_child(_recolor_btn)
+	tb3.add_child(_recolor_btn)
 
 	_paint_btn = Button.new()
 	_paint_btn.text = "Brush Paint"
 	_paint_btn.toggle_mode = true
 	_paint_btn.tooltip_text = "Click and drag to paint with color"
 	_paint_btn.toggled.connect(_on_paint_toggled)
-	tb2.add_child(_paint_btn)
+	tb3.add_child(_paint_btn)
 
 	_color_picker = ColorPickerButton.new()
 	_color_picker.color = Color.WHITE
@@ -291,9 +296,9 @@ func _make_toolbar() -> Control:
 			_canvas.paint_color = col
 			_canvas.queue_redraw()
 	)
-	tb2.add_child(_color_picker)
+	tb3.add_child(_color_picker)
 
-	tb2.add_child(VSeparator.new())
+	tb3.add_child(VSeparator.new())
 
 	_stamp_btn = Button.new()
 	_stamp_btn.text = "Stamp..."
@@ -310,13 +315,13 @@ func _make_toolbar() -> Control:
 			if _canvas and _canvas.stamp_mode:
 				_select_tool("")
 	)
-	tb2.add_child(_stamp_btn)
+	tb3.add_child(_stamp_btn)
 
-	tb2.add_child(VSeparator.new())
+	tb3.add_child(VSeparator.new())
 
 	var brush_size_label := Label.new()
 	brush_size_label.text = "Size:"
-	tb2.add_child(brush_size_label)
+	tb3.add_child(brush_size_label)
 
 	_brush_size_spin = SpinBox.new()
 	_brush_size_spin.min_value = 0.5
@@ -330,15 +335,15 @@ func _make_toolbar() -> Control:
 			_canvas.brush_size = float(val)
 			_canvas.queue_redraw()
 	)
-	tb2.add_child(_brush_size_spin)
+	tb3.add_child(_brush_size_spin)
 	if _canvas != null:
 		_canvas.brush_size = 8.0
 
-	tb2.add_child(VSeparator.new())
+	tb3.add_child(VSeparator.new())
 
 	var shape_lbl := Label.new()
 	shape_lbl.text = "Shape:"
-	tb2.add_child(shape_lbl)
+	tb3.add_child(shape_lbl)
 
 	var shape_opt := OptionButton.new()
 	shape_opt.add_item("Circle", 0)
@@ -349,7 +354,7 @@ func _make_toolbar() -> Control:
 			_canvas.brush_is_square = (idx == 1)
 			_canvas.queue_redraw()
 	)
-	tb2.add_child(shape_opt)
+	tb3.add_child(shape_opt)
 
 	return tb_outer
 
