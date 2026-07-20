@@ -198,23 +198,48 @@ func _draw() -> void:
 	var tex_size := Vector2(texture.get_width(), texture.get_height()) * zoom
 	draw_texture_rect(texture, Rect2(Vector2.ZERO, tex_size), false)
 
-	# Draw grid snap visual helpers if active
+	# Draw grid snap visual helpers if active (culled to visible viewport)
 	if snap_to_grid:
 		var tex_w := texture.get_width()
 		var tex_h := texture.get_height()
 		var grid_color := Color(1.0, 1.0, 1.0, 0.12)
-		var x_pos := float(snap_w)
-		while x_pos < float(tex_w):
-			draw_line(Vector2(x_pos, 0) * zoom, Vector2(x_pos, tex_h) * zoom, grid_color, 1.0)
+		
+		var parent = get_parent()
+		var min_x := 0.0
+		var max_x := float(tex_w)
+		var min_y := 0.0
+		var max_y := float(tex_h)
+		if parent is ScrollContainer:
+			min_x = max(0.0, float(parent.scroll_horizontal) / zoom)
+			max_x = min(float(tex_w), (float(parent.scroll_horizontal) + parent.size.x) / zoom)
+			min_y = max(0.0, float(parent.scroll_vertical) / zoom)
+			max_y = min(float(tex_h), (float(parent.scroll_vertical) + parent.size.y) / zoom)
+		
+		var x_start := float(ceil(min_x / float(snap_w)) * float(snap_w))
+		var x_pos := max(float(snap_w), x_start)
+		while x_pos < max_x:
+			draw_line(Vector2(x_pos, min_y) * zoom, Vector2(x_pos, max_y) * zoom, grid_color, 1.0)
 			x_pos += float(snap_w)
-		var y_pos := float(snap_h)
-		while y_pos < float(tex_h):
-			draw_line(Vector2(0, y_pos) * zoom, Vector2(tex_w, y_pos) * zoom, grid_color, 1.0)
+			
+		var y_start := float(ceil(min_y / float(snap_h)) * float(snap_h))
+		var y_pos := max(float(snap_h), y_start)
+		while y_pos < max_y:
+			draw_line(Vector2(min_x, y_pos) * zoom, Vector2(max_x, y_pos) * zoom, grid_color, 1.0)
 			y_pos += float(snap_h)
 
-	# Draw slices (font fetched once)
+	# Draw slices (culled to visible viewport)
 	var font := get_theme_font("font")
+	var parent = get_parent()
+	var visible_r := Rect2()
+	var use_culling := false
+	if parent is ScrollContainer:
+		visible_r = Rect2(Vector2(parent.scroll_horizontal, parent.scroll_vertical) / zoom, parent.size / zoom)
+		visible_r = visible_r.grow(20.0) # Grow slightly to prevent outline clipping
+		use_culling = true
+
 	for i in range(rects.size()):
+		if use_culling and not visible_r.intersects(rects[i]):
+			continue
 		_draw_slice(i, font)
 
 	# Drag selection box preview
