@@ -94,13 +94,8 @@ static func _edge_kmeans(img: Image, W: int, H: int) -> Array:
 
 static func _bfs_fill(img: Image, bg: Color, tol: float,
 		W: int, H: int, removed: PackedByteArray) -> void:
-	var visited := PackedByteArray()
-	visited.resize(W * H)
-	visited.fill(0)
-
-	for i in range(W * H):
-		if removed[i] != 0:
-			visited[i] = 1
+	# removed'un kopyasını ziyaret haritası olarak kullan — GDScript döngüsünden çok daha hızlı
+	var visited: PackedByteArray = removed.duplicate()
 
 	var queue: Array = []
 	var head: int = 0

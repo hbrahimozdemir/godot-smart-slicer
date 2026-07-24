@@ -1488,22 +1488,29 @@ func _update_history_buttons() -> void:
 func _undo() -> void:
 	if _undo_stack.is_empty():
 		return
-		
-	var prev_state = _undo_stack.pop_back()
+	_apply_history_state(_undo_stack.pop_back(), _redo_stack)
+
+func _redo() -> void:
+	if _redo_stack.is_empty():
+		return
+	_apply_history_state(_redo_stack.pop_back(), _undo_stack)
+
+## Ortak geçmiş durumu uygulayıcı. `state` uygulanır; mevcut durum `push_to` stack'ine eklenir.
+func _apply_history_state(state: Dictionary, push_to: Array) -> void:
 	var current_state := {}
-	
-	if prev_state["type"] == "image":
-		var img = _current_tex.get_image()
-		var img_copy = Image.new()
+
+	if state["type"] == "image":
+		var img := _current_tex.get_image()
+		var img_copy := Image.new()
 		img_copy.copy_from(img)
 		current_state = {
 			"type": "image",
 			"image": img_copy,
 			"path": _current_tex_path
 		}
-		
-		var prev_img: Image = prev_state["image"]
-		var prev_path: String = prev_state["path"]
+
+		var prev_img: Image = state["image"]
+		var prev_path: String = state["path"]
 		var abs_out := ProjectSettings.globalize_path(prev_path)
 		var err = prev_img.save_png(abs_out)
 		if err == OK:
@@ -1514,66 +1521,8 @@ func _undo() -> void:
 			_canvas.load_texture(new_tex)
 			if _preview_player:
 				_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
-	elif prev_state["type"] == "slices":
-		current_state = {
-			"type": "slices",
-			"rects": _canvas.rects.duplicate(),
-			"slice_names": _canvas.slice_names.duplicate(),
-			"slice_materials": _canvas.slice_materials.duplicate(),
-			"selected_indices": _canvas.selected_indices.duplicate(),
-			"locked_states": _canvas.locked_states.duplicate()
-		}
-		
-		_canvas.rects = prev_state["rects"].duplicate()
-		_canvas.slice_names = prev_state["slice_names"].duplicate()
-		_canvas.slice_materials = prev_state.get("slice_materials", []).duplicate()
-		# Out-of-bounds protection guard
-		while _canvas.slice_materials.size() < _canvas.rects.size():
-			_canvas.slice_materials.append("")
-		while _canvas.slice_names.size() < _canvas.rects.size():
-			_canvas.slice_names.append("")
-			
-		_canvas.selected_indices = prev_state["selected_indices"].duplicate()
-		_canvas.locked_states = prev_state["locked_states"].duplicate()
-		_canvas.queue_redraw()
-		_refresh_list()
-		_update_props()
-		if _preview_player:
-			_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
-			
-	_redo_stack.append(current_state)
-	_update_history_buttons()
 
-func _redo() -> void:
-	if _redo_stack.is_empty():
-		return
-		
-	var next_state = _redo_stack.pop_back()
-	var current_state := {}
-	
-	if next_state["type"] == "image":
-		var img = _current_tex.get_image()
-		var img_copy = Image.new()
-		img_copy.copy_from(img)
-		current_state = {
-			"type": "image",
-			"image": img_copy,
-			"path": _current_tex_path
-		}
-		
-		var next_img: Image = next_state["image"]
-		var next_path: String = next_state["path"]
-		var abs_out := ProjectSettings.globalize_path(next_path)
-		var err = next_img.save_png(abs_out)
-		if err == OK:
-			_current_tex_path = next_path
-			_path_label.text = next_path.get_file()
-			var new_tex := ImageTexture.create_from_image(next_img)
-			_current_tex = new_tex
-			_canvas.load_texture(new_tex)
-			if _preview_player:
-				_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
-	elif next_state["type"] == "slices":
+	elif state["type"] == "slices":
 		current_state = {
 			"type": "slices",
 			"rects": _canvas.rects.duplicate(),
@@ -1582,23 +1531,23 @@ func _redo() -> void:
 			"selected_indices": _canvas.selected_indices.duplicate(),
 			"locked_states": _canvas.locked_states.duplicate()
 		}
-		
-		_canvas.rects = next_state["rects"].duplicate()
-		_canvas.slice_names = next_state["slice_names"].duplicate()
-		_canvas.slice_materials = next_state.get("slice_materials", []).duplicate()
-		# Out-of-bounds protection guard
+
+		_canvas.rects = state["rects"].duplicate()
+		_canvas.slice_names = state["slice_names"].duplicate()
+		_canvas.slice_materials = state.get("slice_materials", []).duplicate()
+		# Out-of-bounds koruma
 		while _canvas.slice_materials.size() < _canvas.rects.size():
 			_canvas.slice_materials.append("")
 		while _canvas.slice_names.size() < _canvas.rects.size():
 			_canvas.slice_names.append("")
-			
-		_canvas.selected_indices = next_state["selected_indices"].duplicate()
-		_canvas.locked_states = next_state["locked_states"].duplicate()
+
+		_canvas.selected_indices = state["selected_indices"].duplicate()
+		_canvas.locked_states = state["locked_states"].duplicate()
 		_canvas.queue_redraw()
 		_refresh_list()
 		_update_props()
 		if _preview_player:
 			_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
-			
-	_undo_stack.append(current_state)
+
+	push_to.append(current_state)
 	_update_history_buttons()

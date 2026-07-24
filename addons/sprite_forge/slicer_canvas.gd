@@ -203,14 +203,16 @@ func _draw() -> void:
 		var tex_w := texture.get_width()
 		var tex_h := texture.get_height()
 		var grid_color := Color(1.0, 1.0, 1.0, 0.12)
-		var x_pos := float(snap_w)
+		var sw := float(snap_w)
+		var sh := float(snap_h)
+		var x_pos := sw
 		while x_pos < float(tex_w):
 			draw_line(Vector2(x_pos, 0) * zoom, Vector2(x_pos, tex_h) * zoom, grid_color, 1.0)
-			x_pos += float(snap_w)
-		var y_pos := float(snap_h)
+			x_pos += sw
+		var y_pos := sh
 		while y_pos < float(tex_h):
 			draw_line(Vector2(0, y_pos) * zoom, Vector2(tex_w, y_pos) * zoom, grid_color, 1.0)
-			y_pos += float(snap_h)
+			y_pos += sh
 
 	# Draw slices (font fetched once)
 	var font := get_theme_font("font")
@@ -768,46 +770,79 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 		_preview_mask_tex = null
 		return
 
-	var visited := {}
+	# PackedByteArray — Dictionary'e göre çok daha hızlı ziyaret takibi
+	var visited := PackedByteArray()
+	visited.resize(W * H)
+	visited.fill(0)
 	var queue := [img_p]
 	var head := 0
-	visited[img_p.y * W + img_p.x] = true
-	
+	visited[img_p.y * W + img_p.x] = 1
+
 	const MAX_PREVIEW = 8000
-	
+
 	while head < queue.size() and queue.size() < MAX_PREVIEW:
 		var p: Vector2i = queue[head]
 		head += 1
 		preview_mask.append(p)
-		
-		# 4-way check
-		var neighbors := [
-			Vector2i(p.x - 1, p.y),
-			Vector2i(p.x + 1, p.y),
-			Vector2i(p.x, p.y - 1),
-			Vector2i(p.x, p.y + 1)
-		]
-		for n in neighbors:
-			if n.x >= 0 and n.x < W and n.y >= 0 and n.y < H:
-				var n_idx: int = n.y * W + n.x
-				if not n_idx in visited:
-					visited[n_idx] = true
-					var c: Color = img.get_pixel(n.x, n.y)
-					var dr: float = c.r - bg.r
-					var dg: float = c.g - bg.g
-					var db: float = c.b - bg.b
-					var dist: float = sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
-					if dist <= tolerance:
-						queue.append(n)
+
+		# 4-way check (inline — array alokasyonundan kaçın)
+		var nx: int
+		var ny: int
+		var n_idx: int
+
+		nx = p.x - 1
+		if nx >= 0:
+			n_idx = p.y * W + nx
+			if visited[n_idx] == 0:
+				visited[n_idx] = 1
+				var c: Color = img.get_pixel(nx, p.y)
+				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
+					queue.append(Vector2i(nx, p.y))
+
+		nx = p.x + 1
+		if nx < W:
+			n_idx = p.y * W + nx
+			if visited[n_idx] == 0:
+				visited[n_idx] = 1
+				var c: Color = img.get_pixel(nx, p.y)
+				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
+					queue.append(Vector2i(nx, p.y))
+
+		ny = p.y - 1
+		if ny >= 0:
+			n_idx = ny * W + p.x
+			if visited[n_idx] == 0:
+				visited[n_idx] = 1
+				var c: Color = img.get_pixel(p.x, ny)
+				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
+					queue.append(Vector2i(p.x, ny))
+
+		ny = p.y + 1
+		if ny < H:
+			n_idx = ny * W + p.x
+			if visited[n_idx] == 0:
+				visited[n_idx] = 1
+				var c: Color = img.get_pixel(p.x, ny)
+				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
+					queue.append(Vector2i(p.x, ny))
 
 	if not preview_mask.is_empty():
 		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color
 		mask_color.a = 0.45
-		
-		_preview_mask_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
+
+		# Önbellek: boyut eşleşiyorsa Image.create yerine mevcut image'ı sıfırla
+		if _preview_mask_img == null or _preview_mask_img.get_width() != W or _preview_mask_img.get_height() != H:
+			_preview_mask_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
+		else:
+			_preview_mask_img.fill(Color.TRANSPARENT)
+
 		for p in preview_mask:
 			_preview_mask_img.set_pixel(p.x, p.y, mask_color)
-			
+
 		if _preview_mask_tex == null:
 			_preview_mask_tex = ImageTexture.create_from_image(_preview_mask_img)
 		else:
