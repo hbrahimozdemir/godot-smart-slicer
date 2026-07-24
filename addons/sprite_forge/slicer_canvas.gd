@@ -788,42 +788,54 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 		_preview_mask_tex = null
 		return
 
-	var bg := img.get_pixel(img_p.x, img_p.y)
-	if bg.a < 0.01:
+	# Use raw bytes to avoid get_pixel overhead in tight BFS loop
+	var raw: PackedByteArray = img.get_data()
+	var si := (img_p.y * W + img_p.x) * 4
+	if raw[si + 3] < 3: # alpha < ~1%
 		_preview_mask_tex = null
 		return
 
-	var visited := {}
-	var queue := [img_p]
+	var bg_r := float(raw[si])     / 255.0
+	var bg_g := float(raw[si + 1]) / 255.0
+	var bg_b := float(raw[si + 2]) / 255.0
+	var tol_sq := tolerance * tolerance
+
+	var visited := PackedByteArray()
+	visited.resize(W * H)
+	visited.fill(0)
+
+	# Flat int queue (pixel index = y*W + x)
+	var queue := PackedInt32Array()
 	var head := 0
-	visited[img_p.y * W + img_p.x] = true
-	
+	var start_idx := img_p.y * W + img_p.x
+	visited[start_idx] = 1
+	queue.append(start_idx)
+
 	const MAX_PREVIEW = 8000
-	
+
 	while head < queue.size() and queue.size() < MAX_PREVIEW:
-		var p: Vector2i = queue[head]
+		var pidx: int = queue[head]
 		head += 1
-		preview_mask.append(p)
-		
-		# 4-way check
-		var neighbors := [
-			Vector2i(p.x - 1, p.y),
-			Vector2i(p.x + 1, p.y),
-			Vector2i(p.x, p.y - 1),
-			Vector2i(p.x, p.y + 1)
-		]
-		for n in neighbors:
-			if n.x >= 0 and n.x < W and n.y >= 0 and n.y < H:
-				var n_idx: int = n.y * W + n.x
-				if not n_idx in visited:
-					visited[n_idx] = true
-					var c: Color = img.get_pixel(n.x, n.y)
-					var dr: float = c.r - bg.r
-					var dg: float = c.g - bg.g
-					var db: float = c.b - bg.b
-					var dist: float = sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
-					if dist <= tolerance:
-						queue.append(n)
+		var px: int = pidx % W
+		var py: int = pidx / W
+		preview_mask.append(Vector2i(px, py))
+
+		# 4-way neighbors (inline bounds check)
+		var ns: Array = []
+		if px > 0:     ns.append(pidx - 1)
+		if px < W - 1: ns.append(pidx + 1)
+		if py > 0:     ns.append(pidx - W)
+		if py < H - 1: ns.append(pidx + W)
+		for n_idx in ns:
+			if visited[n_idx] == 0:
+				visited[n_idx] = 1
+				var ri := n_idx * 4
+				var dr: float = float(raw[ri])     / 255.0 - bg_r
+				var dg: float = float(raw[ri + 1]) / 255.0 - bg_g
+				var db: float = float(raw[ri + 2]) / 255.0 - bg_b
+				var d_sq: float = dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114
+				if d_sq <= tol_sq:
+					queue.append(n_idx)
 
 	if not preview_mask.is_empty():
 		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color

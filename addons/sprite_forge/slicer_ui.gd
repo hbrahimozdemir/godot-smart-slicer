@@ -1097,9 +1097,9 @@ func _do_brush_erase(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
 	var src_img := _current_tex.get_image()
-	var b_size: int = 8
+	var b_size: float = 8.0
 	if _brush_size_spin != null:
-		b_size = int(_brush_size_spin.value)
+		b_size = _brush_size_spin.value
 	var is_sq: bool = _canvas.brush_is_square if _canvas else false
 	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, b_size, is_sq)
 	if result == null or result.is_empty():
@@ -1124,9 +1124,9 @@ func _do_brush_paint(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
 	var src_img := _current_tex.get_image()
-	var b_size: int = 8
+	var b_size: float = 8.0
 	if _brush_size_spin != null:
-		b_size = int(_brush_size_spin.value)
+		b_size = _brush_size_spin.value
 	var col := _color_picker.color if _color_picker else Color.WHITE
 	var is_sq: bool = _canvas.brush_is_square if _canvas else false
 	var result := _BgRemover.brush_paint(src_img, img_pos.x, img_pos.y, b_size, col, is_sq)
@@ -1184,6 +1184,10 @@ func _ensure_edited_path() -> void:
 	if not (base_name.ends_with("_nobg") or base_name.ends_with("_edited")):
 		_current_tex_path = base_dir + "/" + base_name + "_edited.png"
 		_path_label.text = base_name + "_edited.png"
+		# Yeni path henüz diskte yok, mevcut texture'ı oraya yaz
+		var abs_new := ProjectSettings.globalize_path(_current_tex_path)
+		if _current_tex:
+			_current_tex.get_image().save_png(abs_new)
 
 func _save_edited_texture() -> void:
 	if not _current_tex or _current_tex_path.is_empty():
@@ -1194,15 +1198,15 @@ func _save_edited_texture() -> void:
 		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
 
 func _on_remove_bg() -> void:
-	if _current_tex_path.is_empty():
-		push_error("SpriteSlicer: No texture path available.")
+	if not _current_tex:
+		push_error("SpriteSlicer: No texture loaded.")
 		return
 	_push_image_state()
 
-	var abs_src: String = ProjectSettings.globalize_path(_current_tex_path)
-	var src_img: Image = Image.load_from_file(abs_src)
+	# In-memory texture'ı kullan — disk'teki eski hali değil
+	var src_img: Image = _current_tex.get_image()
 	if src_img == null or src_img.is_empty():
-		push_error("SpriteSlicer: Could not load file: " + abs_src)
+		push_error("SpriteSlicer: Current texture image is empty.")
 		return
 
 	var result: Image = _BgRemover.remove(src_img, _bg_tolerance, true)
@@ -1210,9 +1214,23 @@ func _on_remove_bg() -> void:
 		push_error("SpriteSlicer: Background removal returned empty image.")
 		return
 
-	var base_dir: String = _current_tex_path.get_base_dir()
-	var base_name: String = _current_tex_path.get_file().get_basename()
-	var res_out: String = base_dir + "/" + base_name + "_nobg.png"
+	# Çıktı dosya yolunu belirle
+	var base_dir: String
+	var raw_base: String
+	if not _current_tex_path.is_empty():
+		base_dir = _current_tex_path.get_base_dir()
+		var bname := _current_tex_path.get_file().get_basename()
+		# Zaten _edited / _nobg suffix'i varsa temizle
+		for suffix in ["_nobg", "_edited"]:
+			if bname.ends_with(suffix):
+				bname = bname.left(bname.length() - suffix.length())
+				break
+		raw_base = bname
+	else:
+		base_dir = "res://"
+		raw_base = "sprite"
+
+	var res_out: String = base_dir + "/" + raw_base + "_nobg.png"
 	var abs_out: String = ProjectSettings.globalize_path(res_out)
 	var err: Error = result.save_png(abs_out)
 	if err != OK:
@@ -1222,9 +1240,9 @@ func _on_remove_bg() -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex      = new_tex
 	_current_tex_path = res_out
-	_path_label.text  = base_name + "_nobg.png"
+	_path_label.text  = raw_base + "_nobg.png"
 	_canvas.update_texture(new_tex)
-	_canvas.set_zoom(_zoom)
+	_canvas.set_zoom(_canvas.zoom)
 	_refresh_list()
 	_update_props()
 	if _preview_player:
