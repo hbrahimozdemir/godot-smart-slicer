@@ -73,8 +73,13 @@ var _mat_edit: LineEdit
 var _mat_browse_btn: Button
 var _mat_box: HBoxContainer
 var _stamp_props_box: VBoxContainer
-var _stamp_file_label: Label
-var _stamp_apply_slices_btn: Button
+var _stamp_pos_x: SpinBox
+var _stamp_pos_y: SpinBox
+var _stamp_scale_x: SpinBox
+var _stamp_scale_y: SpinBox
+var _stamp_pivot_x: SpinBox
+var _stamp_pivot_y: SpinBox
+var _stamp_rot: SpinBox
 
 var _export_folder_edit: LineEdit
 var _export_base_edit: LineEdit
@@ -118,6 +123,7 @@ func _build_ui() -> void:
 	_canvas.brush_paint_dragged.connect(_on_brush_paint_dragged)
 	_canvas.brush_paint_released.connect(_on_brush_paint_released)
 	_canvas.recolor_clicked.connect(_on_recolor_clicked)
+	_canvas.stamp_pos_changed.connect(_on_canvas_stamp_pos_changed)
 	_canvas.slice_action_started.connect(_push_slices_state)
 	scroll.add_child(_canvas)
 
@@ -125,9 +131,9 @@ func _build_ui() -> void:
 
 func _make_toolbar() -> Control:
 	var tb_outer := VBoxContainer.new()
-	tb_outer.add_theme_constant_override("separation", 4)
+	tb_outer.add_theme_constant_override("separation", 2)
 
-	# --- Row 1: File Selection & Zoom ---
+	# --- Row 1: File, Slice, Undo/Redo, Zoom ---
 	var tb1 := HBoxContainer.new()
 	tb1.add_theme_constant_override("separation", 4)
 	tb_outer.add_child(tb1)
@@ -142,6 +148,45 @@ func _make_toolbar() -> Control:
 	_path_label.placeholder_text      = "No texture selected"
 	_path_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tb1.add_child(_path_label)
+
+	tb1.add_child(VSeparator.new())
+
+	var auto_btn := Button.new()
+	auto_btn.text = "Auto Slice"
+	auto_btn.tooltip_text = "Detect sprites via flood-fill"
+	auto_btn.pressed.connect(_on_auto_slice)
+	tb1.add_child(auto_btn)
+
+	var grid_btn := Button.new()
+	grid_btn.text = "Grid Slice..."
+	grid_btn.tooltip_text = "Slice into a uniform grid"
+	grid_btn.pressed.connect(func():
+		if _grid_dialog:
+			_grid_dialog.popup_centered()
+	)
+	tb1.add_child(grid_btn)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "Clear"
+	clear_btn.tooltip_text = "Remove all slices"
+	clear_btn.pressed.connect(_on_clear)
+	tb1.add_child(clear_btn)
+
+	tb1.add_child(VSeparator.new())
+
+	_undo_btn = Button.new()
+	_undo_btn.text = "Undo"
+	_undo_btn.tooltip_text = "Undo last action (Ctrl+Z)"
+	_undo_btn.disabled = true
+	_undo_btn.pressed.connect(_undo)
+	tb1.add_child(_undo_btn)
+
+	_redo_btn = Button.new()
+	_redo_btn.text = "Redo"
+	_redo_btn.tooltip_text = "Redo (Ctrl+Y / Ctrl+Shift+Z)"
+	_redo_btn.disabled = true
+	_redo_btn.pressed.connect(_redo)
+	tb1.add_child(_redo_btn)
 
 	tb1.add_child(VSeparator.new())
 
@@ -163,76 +208,32 @@ func _make_toolbar() -> Control:
 	zplus.pressed.connect(func(): _canvas.set_zoom(_zoom * 1.25))
 	tb1.add_child(zplus)
 
-	# --- Row 2: Slice, History, and Export ---
-	var tb2 := HBoxContainer.new()
-	tb2.add_theme_constant_override("separation", 4)
-	tb_outer.add_child(tb2)
-
-	var auto_btn := Button.new()
-	auto_btn.text = "Auto Slice"
-	auto_btn.tooltip_text = "Detect sprites via flood-fill"
-	auto_btn.pressed.connect(_on_auto_slice)
-	tb2.add_child(auto_btn)
-
-	var grid_btn := Button.new()
-	grid_btn.text = "Grid Slice..."
-	grid_btn.tooltip_text = "Slice into a uniform grid"
-	grid_btn.pressed.connect(func():
-		if _grid_dialog:
-			_grid_dialog.popup_centered()
-	)
-	tb2.add_child(grid_btn)
-
-	var clear_btn := Button.new()
-	clear_btn.text = "Clear"
-	clear_btn.tooltip_text = "Remove all slices"
-	clear_btn.pressed.connect(_on_clear)
-	tb2.add_child(clear_btn)
-
-	tb2.add_child(VSeparator.new())
-
-	_undo_btn = Button.new()
-	_undo_btn.text = "Undo"
-	_undo_btn.tooltip_text = "Undo last action (Ctrl+Z)"
-	_undo_btn.disabled = true
-	_undo_btn.pressed.connect(_undo)
-	tb2.add_child(_undo_btn)
-
-	_redo_btn = Button.new()
-	_redo_btn.text = "Redo"
-	_redo_btn.tooltip_text = "Redo (Ctrl+Y / Ctrl+Shift+Z)"
-	_redo_btn.disabled = true
-	_redo_btn.pressed.connect(_redo)
-	tb2.add_child(_redo_btn)
-
-	tb2.add_child(VSeparator.new())
-
 	var extract_btn := Button.new()
 	extract_btn.text = "Extract All"
 	extract_btn.tooltip_text = "Export slices to disk"
 	extract_btn.pressed.connect(func(): _on_extract(false))
-	tb2.add_child(extract_btn)
+	tb1.add_child(extract_btn)
 	
 	var extract_sel_btn := Button.new()
 	extract_sel_btn.text = "Extract Selected"
 	extract_sel_btn.tooltip_text = "Export ONLY the currently selected slices to disk"
 	extract_sel_btn.pressed.connect(func(): _on_extract(true))
-	tb2.add_child(extract_sel_btn)
+	tb1.add_child(extract_sel_btn)
 
-	# --- Row 3: Editing, Painting, and Erasing ---
-	var tb3 := HBoxContainer.new()
-	tb3.add_theme_constant_override("separation", 4)
-	tb_outer.add_child(tb3)
+	# --- Row 2: Erase tools ---
+	var tb2 := HBoxContainer.new()
+	tb2.add_theme_constant_override("separation", 4)
+	tb_outer.add_child(tb2)
 
 	var remove_bg_btn := Button.new()
 	remove_bg_btn.text = "Remove BG"
 	remove_bg_btn.tooltip_text = "Remove background color using flood-fill"
 	remove_bg_btn.pressed.connect(_on_remove_bg)
-	tb3.add_child(remove_bg_btn)
+	tb2.add_child(remove_bg_btn)
 
 	var tol_label := Label.new()
 	tol_label.text = "Tol:"
-	tb3.add_child(tol_label)
+	tb2.add_child(tol_label)
 
 	var tol_spin := SpinBox.new()
 	tol_spin.min_value = 1
@@ -247,39 +248,39 @@ func _make_toolbar() -> Control:
 		if _canvas:
 			_canvas.tolerance = _bg_tolerance
 	)
-	tb3.add_child(tol_spin)
+	tb2.add_child(tol_spin)
 
-	tb3.add_child(VSeparator.new())
+	tb2.add_child(VSeparator.new())
 
 	_wand_btn = Button.new()
 	_wand_btn.text = "Magic Wand Erase"
 	_wand_btn.toggle_mode = true
 	_wand_btn.tooltip_text = "Click to erase matching color regions"
 	_wand_btn.toggled.connect(_on_wand_toggled)
-	tb3.add_child(_wand_btn)
+	tb2.add_child(_wand_btn)
 
 	_brush_erase_btn = Button.new()
 	_brush_erase_btn.text = "Brush Erase"
 	_brush_erase_btn.toggle_mode = true
 	_brush_erase_btn.tooltip_text = "Click and drag to erase pixels"
 	_brush_erase_btn.toggled.connect(_on_brush_toggled)
-	tb3.add_child(_brush_erase_btn)
+	tb2.add_child(_brush_erase_btn)
 
-	tb3.add_child(VSeparator.new())
+	tb2.add_child(VSeparator.new())
 
 	_recolor_btn = Button.new()
 	_recolor_btn.text = "Magic Wand Recolor"
 	_recolor_btn.toggle_mode = true
 	_recolor_btn.tooltip_text = "Click to recolor matching color regions"
 	_recolor_btn.toggled.connect(_on_recolor_toggled)
-	tb3.add_child(_recolor_btn)
+	tb2.add_child(_recolor_btn)
 
 	_paint_btn = Button.new()
 	_paint_btn.text = "Brush Paint"
 	_paint_btn.toggle_mode = true
 	_paint_btn.tooltip_text = "Click and drag to paint with color"
 	_paint_btn.toggled.connect(_on_paint_toggled)
-	tb3.add_child(_paint_btn)
+	tb2.add_child(_paint_btn)
 
 	_color_picker = ColorPickerButton.new()
 	_color_picker.color = Color.WHITE
@@ -290,9 +291,9 @@ func _make_toolbar() -> Control:
 			_canvas.paint_color = col
 			_canvas.queue_redraw()
 	)
-	tb3.add_child(_color_picker)
+	tb2.add_child(_color_picker)
 
-	tb3.add_child(VSeparator.new())
+	tb2.add_child(VSeparator.new())
 
 	_stamp_btn = Button.new()
 	_stamp_btn.text = "Stamp..."
@@ -309,13 +310,13 @@ func _make_toolbar() -> Control:
 			if _canvas and _canvas.stamp_mode:
 				_select_tool("")
 	)
-	tb3.add_child(_stamp_btn)
+	tb2.add_child(_stamp_btn)
 
-	tb3.add_child(VSeparator.new())
+	tb2.add_child(VSeparator.new())
 
 	var brush_size_label := Label.new()
 	brush_size_label.text = "Size:"
-	tb3.add_child(brush_size_label)
+	tb2.add_child(brush_size_label)
 
 	_brush_size_spin = SpinBox.new()
 	_brush_size_spin.min_value = 0.5
@@ -329,15 +330,15 @@ func _make_toolbar() -> Control:
 			_canvas.brush_size = float(val)
 			_canvas.queue_redraw()
 	)
-	tb3.add_child(_brush_size_spin)
+	tb2.add_child(_brush_size_spin)
 	if _canvas != null:
 		_canvas.brush_size = 8.0
 
-	tb3.add_child(VSeparator.new())
+	tb2.add_child(VSeparator.new())
 
 	var shape_lbl := Label.new()
 	shape_lbl.text = "Shape:"
-	tb3.add_child(shape_lbl)
+	tb2.add_child(shape_lbl)
 
 	var shape_opt := OptionButton.new()
 	shape_opt.add_item("Circle", 0)
@@ -348,7 +349,7 @@ func _make_toolbar() -> Control:
 			_canvas.brush_is_square = (idx == 1)
 			_canvas.queue_redraw()
 	)
-	tb3.add_child(shape_opt)
+	tb2.add_child(shape_opt)
 
 	return tb_outer
 
@@ -417,48 +418,55 @@ func _make_right_panel() -> PanelContainer:
 	_props_box.visible = false
 	vbox.add_child(_props_box)
 
-	# Stamp Tool Panel (simplified — transform is handled by on-canvas gizmo handles)
+	# Stamp Properties Box
 	_stamp_props_box = VBoxContainer.new()
 	_stamp_props_box.add_theme_constant_override("separation", 6)
 	_stamp_props_box.visible = false
 	vbox.add_child(_stamp_props_box)
 
 	var stamp_title := Label.new()
-	stamp_title.text = "Stamp Tool"
+	stamp_title.text = "Stamp Properties"
 	_stamp_props_box.add_child(stamp_title)
 
-	_stamp_file_label = Label.new()
-	_stamp_file_label.text = ""
-	_stamp_file_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_stamp_file_label.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
-	_stamp_props_box.add_child(_stamp_file_label)
+	var stamp_grid := GridContainer.new()
+	stamp_grid.columns = 4
+	stamp_grid.add_theme_constant_override("h_separation", 4)
+	stamp_grid.add_theme_constant_override("v_separation", 4)
+	_stamp_props_box.add_child(stamp_grid)
 
-	var stamp_hint := Label.new()
-	stamp_hint.text = "Drag inside → move\nOrange corners → scale\nBlue handle → rotate"
-	stamp_hint.add_theme_color_override("font_color", Color(0.50, 0.50, 0.50))
-	stamp_hint.add_theme_font_size_override("font_size", 10)
-	stamp_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_stamp_props_box.add_child(stamp_hint)
+	_stamp_pos_x = _make_stamp_spin_inline("Pos X", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	_stamp_pos_y = _make_stamp_spin_inline("Pos Y", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	
+	_stamp_scale_x = _make_stamp_spin_inline("Scale X", stamp_grid, 0.05, 50.0, 0.05, 1.0)
+	_stamp_scale_y = _make_stamp_spin_inline("Scale Y", stamp_grid, 0.05, 50.0, 0.05, 1.0)
+	
+	_stamp_pivot_x = _make_stamp_spin_inline("Pivot X", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	_stamp_pivot_y = _make_stamp_spin_inline("Pivot Y", stamp_grid, -8192.0, 8192.0, 1.0, 0.0)
+	
+	_stamp_rot = _make_stamp_spin_inline("Rot Deg", stamp_grid, -360.0, 360.0, 1.0, 0.0)
+	
+	# Empty labels to align grid
+	var empty_lbl1 := Label.new()
+	var empty_lbl2 := Label.new()
+	stamp_grid.add_child(empty_lbl1)
+	stamp_grid.add_child(empty_lbl2)
+
+	# Stamp Actions
+	var stamp_actions := HBoxContainer.new()
+	stamp_actions.add_theme_constant_override("separation", 6)
+	_stamp_props_box.add_child(stamp_actions)
 
 	var apply_stamp_btn := Button.new()
 	apply_stamp_btn.text = "Apply Stamp"
-	apply_stamp_btn.tooltip_text = "Bake stamp onto the full canvas image"
 	apply_stamp_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	apply_stamp_btn.pressed.connect(_apply_stamp)
-	_stamp_props_box.add_child(apply_stamp_btn)
-
-	_stamp_apply_slices_btn = Button.new()
-	_stamp_apply_slices_btn.text = "Apply to Slices"
-	_stamp_apply_slices_btn.tooltip_text = "Apply stamp to each selected slice (relative position).\nIf no slices are selected, applies to ALL slices."
-	_stamp_apply_slices_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_stamp_apply_slices_btn.pressed.connect(_apply_stamp_to_slices)
-	_stamp_props_box.add_child(_stamp_apply_slices_btn)
+	stamp_actions.add_child(apply_stamp_btn)
 
 	var cancel_stamp_btn := Button.new()
 	cancel_stamp_btn.text = "Cancel"
 	cancel_stamp_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	cancel_stamp_btn.pressed.connect(_cancel_stamp)
-	_stamp_props_box.add_child(cancel_stamp_btn)
+	stamp_actions.add_child(cancel_stamp_btn)
 
 	var props_title := Label.new()
 	props_title.text = "Selected Slice"
@@ -671,6 +679,24 @@ func _make_spin(lbl_text: String, parent: Control) -> SpinBox:
 	parent.add_child(sb)
 	return sb
 
+func _make_stamp_spin_inline(lbl_text: String, parent: Control, min_val: float, max_val: float, step_val: float, default_val: float) -> SpinBox:
+	var lbl := Label.new()
+	lbl.text = lbl_text
+	lbl.custom_minimum_size = Vector2(45, 0)
+	parent.add_child(lbl)
+	
+	var sb := SpinBox.new()
+	sb.min_value = min_val
+	sb.max_value = max_val
+	sb.step = step_val
+	sb.value = default_val
+	sb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(sb)
+	
+	sb.value_changed.connect(func(_v: float) -> void:
+		_on_stamp_prop_changed()
+	)
+	return sb
 
 # --- Dialog setup ---
 
@@ -971,15 +997,26 @@ func _load_stamp_image(path: String) -> void:
 	if tex and _canvas and _current_tex:
 		_canvas.stamp_tex = tex
 		
-		# Place stamp at canvas center by default, pivot at stamp center
+		# Set default transforms based on current texture center
 		var base_img := _current_tex.get_image()
-		_canvas.stamp_pos    = Vector2(base_img.get_width() / 2.0, base_img.get_height() / 2.0)
-		_canvas.stamp_scale  = Vector2.ONE
-		_canvas.stamp_rotation = 0.0
-		_canvas.stamp_pivot  = Vector2(tex.get_width() / 2.0, tex.get_height() / 2.0)
+		var center_x: float = base_img.get_width() / 2.0
+		var center_y: float = base_img.get_height() / 2.0
+		var pivot_x: float = tex.get_width() / 2.0
+		var pivot_y: float = tex.get_height() / 2.0
 		
-		if _stamp_file_label:
-			_stamp_file_label.text = path.get_file()
+		_canvas.stamp_pos = Vector2(center_x, center_y)
+		_canvas.stamp_scale = Vector2.ONE
+		_canvas.stamp_rotation = 0.0
+		_canvas.stamp_pivot = Vector2(pivot_x, pivot_y)
+		
+		# Update UI
+		if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(center_x)
+		if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(center_y)
+		if _stamp_scale_x: _stamp_scale_x.set_value_no_signal(1.0)
+		if _stamp_scale_y: _stamp_scale_y.set_value_no_signal(1.0)
+		if _stamp_pivot_x: _stamp_pivot_x.set_value_no_signal(pivot_x)
+		if _stamp_pivot_y: _stamp_pivot_y.set_value_no_signal(pivot_y)
+		if _stamp_rot: _stamp_rot.set_value_no_signal(0.0)
 		
 		_select_tool("stamp")
 
@@ -997,70 +1034,18 @@ func _assign_material_to_selected(path: String) -> void:
 	_update_props()
 	_refresh_list()
 
-func _on_canvas_stamp_pos_changed(_pos: Vector2) -> void:
-	pass # Spinboxes removed — gizmo handles are now the only transform interface
+func _on_canvas_stamp_pos_changed(pos: Vector2) -> void:
+	if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(pos.x)
+	if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(pos.y)
 
-func _apply_stamp_to_slices() -> void:
-	if not _current_tex or _current_tex_path.is_empty() or not _canvas.stamp_tex:
+func _on_stamp_prop_changed() -> void:
+	if not _canvas or not _canvas.stamp_tex:
 		return
-	
-	# Apply to selected slices; fall back to ALL slices if nothing is selected
-	var target_indices: Array = []
-	if not _canvas.selected_indices.is_empty():
-		target_indices = _canvas.selected_indices.duplicate()
-	else:
-		for i in range(_canvas.rects.size()):
-			target_indices.append(i)
-	
-	if target_indices.is_empty():
-		return
-	
-	_push_image_state()
-	_ensure_edited_path()
-	
-	var base_img := _current_tex.get_image()
-	base_img.convert(Image.FORMAT_RGBA8)
-	var stamp_img := _canvas.stamp_tex.get_image()
-	
-	for idx in target_indices:
-		if idx < 0 or idx >= _canvas.rects.size():
-			continue
-		var rect: Rect2 = _canvas.rects[idx]
-		if rect.size.x < 1 or rect.size.y < 1:
-			continue
-		
-		# Stamp position relative to this slice's top-left corner
-		var relative_pos := _canvas.stamp_pos - rect.position
-		
-		# Extract the sub-image for this slice
-		var ri := Rect2i(int(rect.position.x), int(rect.position.y),
-						int(rect.size.x), int(rect.size.y))
-		var sub_img := base_img.get_region(ri)
-		sub_img.convert(Image.FORMAT_RGBA8)
-		
-		# Apply the stamp to the sub-image with the same transform
-		var result := _BgRemover.paste_stamp_transformed(
-			sub_img,
-			stamp_img,
-			relative_pos,
-			_canvas.stamp_scale,
-			_canvas.stamp_rotation,
-			_canvas.stamp_pivot
-		)
-		
-		if result == null or result.is_empty():
-			continue
-		
-		# Blit result back into the sprite sheet
-		base_img.blit_rect(result,
-			Rect2i(0, 0, result.get_width(), result.get_height()),
-			Vector2i(int(rect.position.x), int(rect.position.y)))
-	
-	var new_tex := ImageTexture.create_from_image(base_img)
-	_current_tex = new_tex
-	_canvas.update_texture(new_tex)
-	_save_edited_texture()
-	_select_tool("")
+	_canvas.stamp_pos = Vector2(_stamp_pos_x.value, _stamp_pos_y.value)
+	_canvas.stamp_scale = Vector2(_stamp_scale_x.value, _stamp_scale_y.value)
+	_canvas.stamp_rotation = deg_to_rad(_stamp_rot.value)
+	_canvas.stamp_pivot = Vector2(_stamp_pivot_x.value, _stamp_pivot_y.value)
+	_canvas.queue_redraw()
 
 func _apply_stamp() -> void:
 	if not _current_tex or _current_tex_path.is_empty() or not _canvas.stamp_tex:
@@ -1107,9 +1092,9 @@ func _do_brush_erase(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
 	var src_img := _current_tex.get_image()
-	var b_size: float = 8.0
+	var b_size: int = 8
 	if _brush_size_spin != null:
-		b_size = _brush_size_spin.value
+		b_size = int(_brush_size_spin.value)
 	var is_sq: bool = _canvas.brush_is_square if _canvas else false
 	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, b_size, is_sq)
 	if result == null or result.is_empty():
@@ -1134,9 +1119,9 @@ func _do_brush_paint(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
 	var src_img := _current_tex.get_image()
-	var b_size: float = 8.0
+	var b_size: int = 8
 	if _brush_size_spin != null:
-		b_size = _brush_size_spin.value
+		b_size = int(_brush_size_spin.value)
 	var col := _color_picker.color if _color_picker else Color.WHITE
 	var is_sq: bool = _canvas.brush_is_square if _canvas else false
 	var result := _BgRemover.brush_paint(src_img, img_pos.x, img_pos.y, b_size, col, is_sq)
@@ -1194,10 +1179,6 @@ func _ensure_edited_path() -> void:
 	if not (base_name.ends_with("_nobg") or base_name.ends_with("_edited")):
 		_current_tex_path = base_dir + "/" + base_name + "_edited.png"
 		_path_label.text = base_name + "_edited.png"
-		# Yeni path henüz diskte yok, mevcut texture'ı oraya yaz
-		var abs_new := ProjectSettings.globalize_path(_current_tex_path)
-		if _current_tex:
-			_current_tex.get_image().save_png(abs_new)
 
 func _save_edited_texture() -> void:
 	if not _current_tex or _current_tex_path.is_empty():
@@ -1208,15 +1189,15 @@ func _save_edited_texture() -> void:
 		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
 
 func _on_remove_bg() -> void:
-	if not _current_tex:
-		push_error("SpriteSlicer: No texture loaded.")
+	if _current_tex_path.is_empty():
+		push_error("SpriteSlicer: No texture path available.")
 		return
 	_push_image_state()
 
-	# In-memory texture'ı kullan — disk'teki eski hali değil
-	var src_img: Image = _current_tex.get_image()
+	var abs_src: String = ProjectSettings.globalize_path(_current_tex_path)
+	var src_img: Image = Image.load_from_file(abs_src)
 	if src_img == null or src_img.is_empty():
-		push_error("SpriteSlicer: Current texture image is empty.")
+		push_error("SpriteSlicer: Could not load file: " + abs_src)
 		return
 
 	var result: Image = _BgRemover.remove(src_img, _bg_tolerance, true)
@@ -1224,23 +1205,9 @@ func _on_remove_bg() -> void:
 		push_error("SpriteSlicer: Background removal returned empty image.")
 		return
 
-	# Çıktı dosya yolunu belirle
-	var base_dir: String
-	var raw_base: String
-	if not _current_tex_path.is_empty():
-		base_dir = _current_tex_path.get_base_dir()
-		var bname := _current_tex_path.get_file().get_basename()
-		# Zaten _edited / _nobg suffix'i varsa temizle
-		for suffix in ["_nobg", "_edited"]:
-			if bname.ends_with(suffix):
-				bname = bname.left(bname.length() - suffix.length())
-				break
-		raw_base = bname
-	else:
-		base_dir = "res://"
-		raw_base = "sprite"
-
-	var res_out: String = base_dir + "/" + raw_base + "_nobg.png"
+	var base_dir: String = _current_tex_path.get_base_dir()
+	var base_name: String = _current_tex_path.get_file().get_basename()
+	var res_out: String = base_dir + "/" + base_name + "_nobg.png"
 	var abs_out: String = ProjectSettings.globalize_path(res_out)
 	var err: Error = result.save_png(abs_out)
 	if err != OK:
@@ -1250,9 +1217,9 @@ func _on_remove_bg() -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex      = new_tex
 	_current_tex_path = res_out
-	_path_label.text  = raw_base + "_nobg.png"
+	_path_label.text  = base_name + "_nobg.png"
 	_canvas.update_texture(new_tex)
-	_canvas.set_zoom(_canvas.zoom)
+	_canvas.set_zoom(_zoom)
 	_refresh_list()
 	_update_props()
 	if _preview_player:

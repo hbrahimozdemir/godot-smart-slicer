@@ -2,7 +2,6 @@
 class_name BgRemover
 
 # Perceptual color distance flood-fill background remover with alpha matting.
-# Highly optimized: all pixel loops run on raw PackedByteArray directly, eliminating all get_pixel()/set_pixel() bridge overhead.
 
 const _K: int = 4
 const _KMEANS_ITER: int = 12
@@ -23,13 +22,11 @@ static func remove(image: Image, tolerance: float = 0.18, feather: bool = true) 
 	removed.resize(W * H)
 	removed.fill(0)
 
-	var raw: PackedByteArray = img.get_data()
-
 	for ci in range(bg_centers.size()):
 		var bg: Color = bg_centers[ci]
-		_bfs_fill_raw(raw, bg, tolerance, W, H, removed)
+		_bfs_fill(img, bg, tolerance, W, H, removed)
 
-	_apply_matting_raw(img, raw, removed, W, H, feather)
+	_apply_matting(img, removed, W, H, feather)
 
 	return img
 
@@ -37,19 +34,18 @@ static func _edge_kmeans(img: Image, W: int, H: int) -> Array:
 	var samples: Array = []
 	var step: int = max(1, min(W, H) / 60)
 
-	var raw: PackedByteArray = img.get_data()
 	for x in range(0, W, step):
-		samples.append(_raw_to_color(raw, x, 0, W))
-		samples.append(_raw_to_color(raw, x, H - 1, W))
+		samples.append(img.get_pixel(x, 0))
+		samples.append(img.get_pixel(x, H - 1))
 	for y in range(0, H, step):
-		samples.append(_raw_to_color(raw, 0, y, W))
-		samples.append(_raw_to_color(raw, W - 1, y, W))
+		samples.append(img.get_pixel(0, y))
+		samples.append(img.get_pixel(W - 1, y))
 
 	var corners: Array = [
-		_raw_to_color(raw, 0, 0, W),
-		_raw_to_color(raw, W - 1, 0, W),
-		_raw_to_color(raw, 0, H - 1, W),
-		_raw_to_color(raw, W - 1, H - 1, W)
+		img.get_pixel(0, 0),
+		img.get_pixel(W - 1, 0),
+		img.get_pixel(0, H - 1),
+		img.get_pixel(W - 1, H - 1)
 	]
 	for _r in range(8):
 		for c in corners:
@@ -96,75 +92,65 @@ static func _edge_kmeans(img: Image, W: int, H: int) -> Array:
 
 	return centers
 
-static func _raw_to_color(raw: PackedByteArray, x: int, y: int, W: int) -> Color:
-	var ri := (y * W + x) * 4
-	return Color(raw[ri] / 255.0, raw[ri + 1] / 255.0, raw[ri + 2] / 255.0, raw[ri + 3] / 255.0)
-
-# BFS flood-fill using a PackedInt32Array as a flat int queue (pixel index = y*W + x).
-# This avoids per-pixel Vector2i boxing and reduces GC pressure significantly.
-static func _bfs_fill_raw(raw: PackedByteArray, bg: Color, tol: float,
+static func _bfs_fill(img: Image, bg: Color, tol: float,
 		W: int, H: int, removed: PackedByteArray) -> void:
-	var visited := removed.duplicate()
+	var visited := PackedByteArray()
+	visited.resize(W * H)
+	visited.fill(0)
 
-	# Flat int queue: stores pixel indices (y*W + x)
-	var queue := PackedInt32Array()
+	for i in range(W * H):
+		if removed[i] != 0:
+			visited[i] = 1
+
+	var queue: Array = []
 	var head: int = 0
 
-	var bg_r := bg.r
-	var bg_g := bg.g
-	var bg_b := bg.b
-	var tol_sq := tol * tol  # Compare squared to avoid sqrt in hot path
-
-	# Seed from all 4 edges
 	for x in range(W):
-		_try_seed_fast(queue, visited, raw, x, 0, bg_r, bg_g, bg_b, tol_sq, W)
-		_try_seed_fast(queue, visited, raw, x, H - 1, bg_r, bg_g, bg_b, tol_sq, W)
+		_try_seed(queue, visited, img, x, 0,     bg, tol, W)
+		_try_seed(queue, visited, img, x, H - 1, bg, tol, W)
 	for y in range(1, H - 1):
-		_try_seed_fast(queue, visited, raw, 0, y, bg_r, bg_g, bg_b, tol_sq, W)
-		_try_seed_fast(queue, visited, raw, W - 1, y, bg_r, bg_g, bg_b, tol_sq, W)
+		_try_seed(queue, visited, img, 0,     y, bg, tol, W)
+		_try_seed(queue, visited, img, W - 1, y, bg, tol, W)
 
 	while head < queue.size():
-		var pidx: int = queue[head]
+		var p: Vector2i = queue[head]
 		head += 1
-		removed[pidx] = 1
-		var px: int = pidx % W
-		var py: int = pidx / W
+		removed[p.y * W + p.x] = 1
 
-		if px > 0:     _try_seed_fast(queue, visited, raw, px - 1, py,     bg_r, bg_g, bg_b, tol_sq, W)
-		if px < W - 1: _try_seed_fast(queue, visited, raw, px + 1, py,     bg_r, bg_g, bg_b, tol_sq, W)
-		if py > 0:     _try_seed_fast(queue, visited, raw, px,     py - 1, bg_r, bg_g, bg_b, tol_sq, W)
-		if py < H - 1: _try_seed_fast(queue, visited, raw, px,     py + 1, bg_r, bg_g, bg_b, tol_sq, W)
+		var nx: int
+		var ny: int
 
-# Seeder for _bfs_fill_raw: uses squared perceptual distance to skip sqrt.
-static func _try_seed_fast(queue: PackedInt32Array, visited: PackedByteArray, raw: PackedByteArray,
-		x: int, y: int, bg_r: float, bg_g: float, bg_b: float, tol_sq: float, W: int) -> void:
+		nx = p.x - 1
+		if nx >= 0:
+			_try_seed(queue, visited, img, nx, p.y, bg, tol, W)
+		nx = p.x + 1
+		if nx < W:
+			_try_seed(queue, visited, img, nx, p.y, bg, tol, W)
+		ny = p.y - 1
+		if ny >= 0:
+			_try_seed(queue, visited, img, p.x, ny, bg, tol, W)
+		ny = p.y + 1
+		if ny < H:
+			_try_seed(queue, visited, img, p.x, ny, bg, tol, W)
+
+static func _try_seed(queue: Array, visited: PackedByteArray, img: Image,
+		x: int, y: int, bg: Color, tol: float, W: int) -> void:
 	var idx: int = y * W + x
 	if visited[idx] != 0:
 		return
 	visited[idx] = 1
-	var r_idx := idx * 4
-	var a: int = raw[r_idx + 3]
-	if a < 13: # alpha < ~5%
-		queue.append(idx)
-	else:
-		var dr: float = float(raw[r_idx])     / 255.0 - bg_r
-		var dg: float = float(raw[r_idx + 1]) / 255.0 - bg_g
-		var db: float = float(raw[r_idx + 2]) / 255.0 - bg_b
-		var d_sq: float = dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114
-		if d_sq <= tol_sq:
-			queue.append(idx)
+	var c: Color = img.get_pixel(x, y)
+	if c.a < 0.05 or _dist(c, bg) <= tol:
+		queue.append(Vector2i(x, y))
 
-static func _apply_matting_raw(img: Image, raw: PackedByteArray, removed: PackedByteArray,
+static func _apply_matting(img: Image, removed: PackedByteArray,
 		W: int, H: int, feather: bool) -> void:
 	for y in range(H):
-		var row_base := y * W
 		for x in range(W):
-			if removed[row_base + x] != 0:
-				var r_idx := (row_base + x) * 4
-				raw[r_idx + 3] = 0
+			if removed[y * W + x]:
+				img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 
 	if not feather:
-		img.create_from_data(W, H, false, Image.FORMAT_RGBA8, raw)
 		return
 
 	var dist_map := PackedFloat32Array()
@@ -172,19 +158,15 @@ static func _apply_matting_raw(img: Image, raw: PackedByteArray, removed: Packed
 	var BIG: float = float(W + H + 1)
 
 	for y in range(H):
-		var row_base := y * W
 		for x in range(W):
-			var idx := row_base + x
-			if raw[idx * 4 + 3] < 3: # 0.01 * 255.0 = 2.55
-				dist_map[idx] = 0.0
+			if img.get_pixel(x, y).a < 0.01:
+				dist_map[y * W + x] = 0.0
 			else:
-				dist_map[idx] = BIG
+				dist_map[y * W + x] = BIG
 
-	# Forward pass
 	for y in range(H):
-		var row_base := y * W
 		for x in range(W):
-			var idx := row_base + x
+			var idx: int = y * W + x
 			if dist_map[idx] == 0.0:
 				continue
 			var best: float = dist_map[idx]
@@ -198,11 +180,9 @@ static func _apply_matting_raw(img: Image, raw: PackedByteArray, removed: Packed
 					best = v
 			dist_map[idx] = best
 
-	# Backward pass
 	for y in range(H - 1, -1, -1):
-		var row_base := y * W
 		for x in range(W - 1, -1, -1):
-			var idx := row_base + x
+			var idx: int = y * W + x
 			if dist_map[idx] == 0.0:
 				continue
 			var best: float = dist_map[idx]
@@ -216,24 +196,18 @@ static func _apply_matting_raw(img: Image, raw: PackedByteArray, removed: Packed
 					best = v
 			dist_map[idx] = best
 
-	# Apply matting to raw bytes
-	var raw_out := raw.duplicate()
+	var snapshot: Image = img.duplicate()
 	for y in range(H):
-		var row_base := y * W
 		for x in range(W):
-			var idx := row_base + x
-			var raw_idx := idx * 4
-			var a := raw[raw_idx + 3]
-			if a < 3:
+			var c: Color = snapshot.get_pixel(x, y)
+			if c.a < 0.01:
 				continue
-			var d: float = dist_map[idx]
+			var d: float = dist_map[y * W + x]
 			if d > _MAT_RADIUS:
 				continue
 			var t: float = d / float(_MAT_RADIUS)
 			var smooth_t: float = t * t * (3.0 - 2.0 * t)
-			raw_out[raw_idx + 3] = int(a * smooth_t)
-
-	img.create_from_data(W, H, false, Image.FORMAT_RGBA8, raw_out)
+			img.set_pixel(x, y, Color(c.r, c.g, c.b, c.a * smooth_t))
 
 static func _dist(a: Color, b: Color) -> float:
 	var dr: float = a.r - b.r
@@ -252,10 +226,8 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 	if start_x < 0 or start_y < 0 or start_x >= W or start_y >= H:
 		return img
 		
-	var raw := img.get_data()
-	var si := (start_y * W + start_x) * 4
-	var bg_a := raw[si + 3]
-	if bg_a < 13: # alpha < ~5%, nothing to erase
+	var bg: Color = img.get_pixel(start_x, start_y)
+	if bg.a < 0.05:
 		return img
 
 	var removed := PackedByteArray()
@@ -266,31 +238,30 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 	visited.resize(W * H)
 	visited.fill(0)
 
-	var bg_r := float(raw[si])     / 255.0
-	var bg_g := float(raw[si + 1]) / 255.0
-	var bg_b := float(raw[si + 2]) / 255.0
-	var tol_sq := tolerance * tolerance
-
-	var queue := PackedInt32Array()
+	var queue: Array = []
 	var head: int = 0
-	_try_seed_fast(queue, visited, raw, start_x, start_y, bg_r, bg_g, bg_b, tol_sq, W)
+	
+	_try_seed(queue, visited, img, start_x, start_y, bg, tolerance, W)
 
 	while head < queue.size():
-		var pidx: int = queue[head]
+		var p: Vector2i = queue[head]
 		head += 1
-		removed[pidx] = 1
-		var px: int = pidx % W
-		var py: int = pidx / W
-		if px > 0:     _try_seed_fast(queue, visited, raw, px - 1, py,     bg_r, bg_g, bg_b, tol_sq, W)
-		if px < W - 1: _try_seed_fast(queue, visited, raw, px + 1, py,     bg_r, bg_g, bg_b, tol_sq, W)
-		if py > 0:     _try_seed_fast(queue, visited, raw, px,     py - 1, bg_r, bg_g, bg_b, tol_sq, W)
-		if py < H - 1: _try_seed_fast(queue, visited, raw, px,     py + 1, bg_r, bg_g, bg_b, tol_sq, W)
+		removed[p.y * W + p.x] = 1
 
-	for i in range(W * H):
-		if removed[i] != 0:
-			raw[i * 4 + 3] = 0
+		var nx: int = p.x - 1
+		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		nx = p.x + 1
+		if nx < W: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		var ny: int = p.y - 1
+		if ny >= 0: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+		ny = p.y + 1
+		if ny < H: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
 
-	img.create_from_data(W, H, false, Image.FORMAT_RGBA8, raw)
+	for y in range(H):
+		for x in range(W):
+			if removed[y * W + x] != 0:
+				img.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
+
 	return img
 
 static func brush_erase(image: Image, center_x: int, center_y: int, radius: float, is_square: bool = false) -> Image:
@@ -299,19 +270,15 @@ static func brush_erase(image: Image, center_x: int, center_y: int, radius: floa
 	var H: int = image.get_height()
 	var r_ceil := int(ceil(radius))
 
-	var raw := image.get_data()
 	for y in range(max(0, center_y - r_ceil), min(H, center_y + r_ceil + 1)):
-		var row_base := y * W
 		for x in range(max(0, center_x - r_ceil), min(W, center_x + r_ceil + 1)):
 			if is_square:
-				raw[(row_base + x) * 4 + 3] = 0
+				image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 			else:
 				var dx := x - center_x
 				var dy := y - center_y
 				if float(dx*dx + dy*dy) <= radius*radius:
-					raw[(row_base + x) * 4 + 3] = 0
-
-	image.create_from_data(W, H, false, Image.FORMAT_RGBA8, raw)
+					image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 	return image
 
 static func brush_paint(image: Image, center_x: int, center_y: int, radius: float, color: Color, is_square: bool = false) -> Image:
@@ -320,32 +287,15 @@ static func brush_paint(image: Image, center_x: int, center_y: int, radius: floa
 	var H: int = image.get_height()
 	var r_ceil := int(ceil(radius))
 
-	var raw := image.get_data()
-	var c_r := int(color.r * 255.0)
-	var c_g := int(color.g * 255.0)
-	var c_b := int(color.b * 255.0)
-	var c_a := int(color.a * 255.0)
-
 	for y in range(max(0, center_y - r_ceil), min(H, center_y + r_ceil + 1)):
-		var row_base := y * W
 		for x in range(max(0, center_x - r_ceil), min(W, center_x + r_ceil + 1)):
-			var draw_pixel := false
 			if is_square:
-				draw_pixel = true
+				image.set_pixel(x, y, color)
 			else:
 				var dx := x - center_x
 				var dy := y - center_y
 				if float(dx*dx + dy*dy) <= radius*radius:
-					draw_pixel = true
-			
-			if draw_pixel:
-				var r_idx := (row_base + x) * 4
-				raw[r_idx] = c_r
-				raw[r_idx + 1] = c_g
-				raw[r_idx + 2] = c_b
-				raw[r_idx + 3] = c_a
-
-	image.create_from_data(W, H, false, Image.FORMAT_RGBA8, raw)
+					image.set_pixel(x, y, color)
 	return image
 
 static func paste_stamp_transformed(
@@ -393,41 +343,18 @@ static func paste_stamp_transformed(
 	min_y = clamp(min_y, 0, dst_h - 1)
 	max_y = clamp(max_y, 0, dst_h - 1)
 	
-	var base_raw := base_image.get_data()
-	var stamp_raw := stamp_image.get_data()
-
 	for y in range(min_y, max_y + 1):
-		var row_base := y * dst_w
 		for x in range(min_x, max_x + 1):
 			var src_pos := inv * Vector2(x, y)
 			var sx := int(round(src_pos.x))
 			var sy := int(round(src_pos.y))
 			if sx >= 0 and sx < src_w and sy >= 0 and sy < src_h:
-				var s_idx := (sy * src_w + sx) * 4
-				var s_a := stamp_raw[s_idx + 3]
-				if s_a > 0:
-					var b_idx := (row_base + x) * 4
-					var s_r := stamp_raw[s_idx]
-					var s_g := stamp_raw[s_idx + 1]
-					var s_b := stamp_raw[s_idx + 2]
+				var src_color := stamp_image.get_pixel(sx, sy)
+				if src_color.a > 0.0:
+					var dst_color := base_image.get_pixel(x, y)
+					var blended_color := dst_color.blend(src_color)
+					base_image.set_pixel(x, y, blended_color)
 					
-					var b_r := base_raw[b_idx]
-					var b_g := base_raw[b_idx + 1]
-					var b_b := base_raw[b_idx + 2]
-					var b_a := base_raw[b_idx + 3]
-					
-					var src_alpha := float(s_a) / 255.0
-					var out_a := s_a + int(float(b_a) * (1.0 - src_alpha))
-					if out_a > 0:
-						var out_r := int((float(s_r) * s_a + float(b_r) * b_a * (1.0 - src_alpha)) / float(out_a))
-						var out_g := int((float(s_g) * s_a + float(b_g) * b_a * (1.0 - src_alpha)) / float(out_a))
-						var out_b := int((float(s_b) * s_a + float(b_b) * b_a * (1.0 - src_alpha)) / float(out_a))
-						base_raw[b_idx] = clamp(out_r, 0, 255)
-						base_raw[b_idx + 1] = clamp(out_g, 0, 255)
-						base_raw[b_idx + 2] = clamp(out_b, 0, 255)
-						base_raw[b_idx + 3] = clamp(out_a, 0, 255)
-					
-	base_image.create_from_data(dst_w, dst_h, false, Image.FORMAT_RGBA8, base_raw)
 	return base_image
 
 static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_color: Color, tolerance: float) -> Image:
@@ -441,9 +368,8 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 	if start_x < 0 or start_y < 0 or start_x >= W or start_y >= H:
 		return img
 		
-	var raw := img.get_data()
-	var si := (start_y * W + start_x) * 4
-	if raw[si + 3] < 3: # alpha < ~1%
+	var bg: Color = img.get_pixel(start_x, start_y)
+	if bg.a < 0.01:
 		return img
 
 	var recolored := PackedByteArray()
@@ -454,38 +380,32 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 	visited.resize(W * H)
 	visited.fill(0)
 
-	var bg_r := float(raw[si])     / 255.0
-	var bg_g := float(raw[si + 1]) / 255.0
-	var bg_b := float(raw[si + 2]) / 255.0
-	var tol_sq := tolerance * tolerance
-
-	var queue := PackedInt32Array()
+	var queue: Array = []
 	var head: int = 0
-	_try_seed_fast(queue, visited, raw, start_x, start_y, bg_r, bg_g, bg_b, tol_sq, W)
+	
+	_try_seed(queue, visited, img, start_x, start_y, bg, tolerance, W)
 
 	while head < queue.size():
-		var pidx: int = queue[head]
+		var p: Vector2i = queue[head]
 		head += 1
-		recolored[pidx] = 1
-		var px: int = pidx % W
-		var py: int = pidx / W
-		if px > 0:     _try_seed_fast(queue, visited, raw, px - 1, py,     bg_r, bg_g, bg_b, tol_sq, W)
-		if px < W - 1: _try_seed_fast(queue, visited, raw, px + 1, py,     bg_r, bg_g, bg_b, tol_sq, W)
-		if py > 0:     _try_seed_fast(queue, visited, raw, px,     py - 1, bg_r, bg_g, bg_b, tol_sq, W)
-		if py < H - 1: _try_seed_fast(queue, visited, raw, px,     py + 1, bg_r, bg_g, bg_b, tol_sq, W)
+		recolored[p.y * W + p.x] = 1
 
-	var nc_r := int(new_color.r * 255.0)
-	var nc_g := int(new_color.g * 255.0)
-	var nc_b := int(new_color.b * 255.0)
+		var nx: int = p.x - 1
+		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		nx = p.x + 1
+		if nx < W: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
+		var ny: int = p.y - 1
+		if ny >= 0: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+		ny = p.y + 1
+		if ny < H: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
 
-	for i in range(W * H):
-		if recolored[i] != 0:
-			var r_idx := i * 4
-			raw[r_idx]     = nc_r
-			raw[r_idx + 1] = nc_g
-			raw[r_idx + 2] = nc_b
+	for y in range(H):
+		for x in range(W):
+			if recolored[y * W + x] != 0:
+				var original := img.get_pixel(x, y)
+				# Recolor while keeping original pixel's alpha!
+				img.set_pixel(x, y, Color(new_color.r, new_color.g, new_color.b, original.a))
 
-	img.create_from_data(W, H, false, Image.FORMAT_RGBA8, raw)
 	return img
 
 static func paste_stamp(base_image: Image, stamp_image: Image, center_x: int, center_y: int) -> Image:
@@ -495,8 +415,10 @@ static func paste_stamp(base_image: Image, stamp_image: Image, center_x: int, ce
 	var stamp_w := stamp_image.get_width()
 	var stamp_h := stamp_image.get_height()
 	
+	# Calculate top-left destination position
 	var dest_x := center_x - stamp_w / 2
 	var dest_y := center_y - stamp_h / 2
 	
+	# Fast alpha blending blit via C++!
 	base_image.blend_rect(stamp_image, Rect2i(0, 0, stamp_w, stamp_h), Vector2i(dest_x, dest_y))
 	return base_image

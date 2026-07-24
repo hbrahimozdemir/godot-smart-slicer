@@ -38,12 +38,6 @@ var stamp_rotation: float = 0.0
 var stamp_pivot: Vector2 = Vector2.ZERO
 var _stamp_dragging: bool = false
 var _stamp_drag_offset: Vector2 = Vector2.ZERO
-var _stamp_gizmo_mode: String = ""   # "", "scale", "rotate"
-var _stamp_gizmo_start_mouse: Vector2 = Vector2.ZERO
-var _stamp_gizmo_start_scale: Vector2 = Vector2.ONE
-var _stamp_gizmo_start_rot: float = 0.0
-var _stamp_gizmo_start_rot_angle: float = 0.0
-var _stamp_gizmo_start_pos: Vector2 = Vector2.ZERO
 var paint_color: Color = Color.WHITE
 var tolerance: float = 0.18
 var preview_mask: Array[Vector2i] = []
@@ -86,8 +80,6 @@ var _pan_start_mouse: Vector2 = Vector2.ZERO
 var _pan_start_scroll: Vector2 = Vector2.ZERO
 
 const HANDLE_R: float = 5.0
-const STAMP_HANDLE_R: float = 7.0
-const STAMP_ROT_DIST: float = 32.0
 
 func _ready() -> void:
 	focus_mode = FOCUS_CLICK
@@ -206,48 +198,23 @@ func _draw() -> void:
 	var tex_size := Vector2(texture.get_width(), texture.get_height()) * zoom
 	draw_texture_rect(texture, Rect2(Vector2.ZERO, tex_size), false)
 
-	# Draw grid snap visual helpers if active (culled to visible viewport)
+	# Draw grid snap visual helpers if active
 	if snap_to_grid:
 		var tex_w := texture.get_width()
 		var tex_h := texture.get_height()
 		var grid_color := Color(1.0, 1.0, 1.0, 0.12)
-		
-		var parent = get_parent()
-		var min_x := 0.0
-		var max_x := float(tex_w)
-		var min_y := 0.0
-		var max_y := float(tex_h)
-		if parent is ScrollContainer:
-			min_x = max(0.0, float(parent.scroll_horizontal) / zoom)
-			max_x = min(float(tex_w), (float(parent.scroll_horizontal) + parent.size.x) / zoom)
-			min_y = max(0.0, float(parent.scroll_vertical) / zoom)
-			max_y = min(float(tex_h), (float(parent.scroll_vertical) + parent.size.y) / zoom)
-		
-		var x_start := float(ceil(min_x / float(snap_w)) * float(snap_w))
-		var x_pos := max(float(snap_w), x_start)
-		while x_pos < max_x:
-			draw_line(Vector2(x_pos, min_y) * zoom, Vector2(x_pos, max_y) * zoom, grid_color, 1.0)
+		var x_pos := float(snap_w)
+		while x_pos < float(tex_w):
+			draw_line(Vector2(x_pos, 0) * zoom, Vector2(x_pos, tex_h) * zoom, grid_color, 1.0)
 			x_pos += float(snap_w)
-			
-		var y_start := float(ceil(min_y / float(snap_h)) * float(snap_h))
-		var y_pos := max(float(snap_h), y_start)
-		while y_pos < max_y:
-			draw_line(Vector2(min_x, y_pos) * zoom, Vector2(max_x, y_pos) * zoom, grid_color, 1.0)
+		var y_pos := float(snap_h)
+		while y_pos < float(tex_h):
+			draw_line(Vector2(0, y_pos) * zoom, Vector2(tex_w, y_pos) * zoom, grid_color, 1.0)
 			y_pos += float(snap_h)
 
-	# Draw slices (culled to visible viewport)
+	# Draw slices (font fetched once)
 	var font := get_theme_font("font")
-	var parent = get_parent()
-	var visible_r := Rect2()
-	var use_culling := false
-	if parent is ScrollContainer:
-		visible_r = Rect2(Vector2(parent.scroll_horizontal, parent.scroll_vertical) / zoom, parent.size / zoom)
-		visible_r = visible_r.grow(20.0) # Grow slightly to prevent outline clipping
-		use_culling = true
-
 	for i in range(rects.size()):
-		if use_culling and not visible_r.intersects(rects[i]):
-			continue
 		_draw_slice(i, font)
 
 	# Drag selection box preview
@@ -282,33 +249,20 @@ func _draw() -> void:
 
 	# Draw stamp preview
 	if stamp_mode and stamp_tex:
-		draw_set_transform(stamp_pos * zoom, stamp_rotation, stamp_scale * zoom)
-
-		# Texture + bounding border (in stamp's local space)
+		var draw_pos := stamp_pos * zoom
+		var draw_scale := stamp_scale * zoom
+		var draw_pivot := stamp_pivot * zoom
+		draw_set_transform(draw_pos, stamp_rotation, draw_scale)
+		
+		# Draw stamp texture centered on pivot
 		draw_texture(stamp_tex, -stamp_pivot, Color(1.0, 1.0, 1.0, 0.75))
-		draw_rect(Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height())),
-			Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
-
-		# Restore to canvas space for gizmo handles
+		
+		# Draw selection border
+		var rect := Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height()))
+		draw_rect(rect, Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
+		
+		# Restore identity transform
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
-
-		var handles := _get_stamp_gizmo_handles()
-
-		# ── Rotation handle (blue circle with arc icon + stem line) ──
-		draw_line(handles["rot_anchor"], handles["rot"], Color(1.0, 1.0, 1.0, 0.55), 1.5)
-		draw_circle(handles["rot"], STAMP_HANDLE_R, Color(0.12, 0.70, 1.0))
-		draw_arc(handles["rot"], STAMP_HANDLE_R, 0.0, TAU, 20, Color.WHITE, 1.5)
-		draw_arc(handles["rot"], STAMP_HANDLE_R * 0.50, PI * 0.30, PI * 1.70, 12, Color.WHITE, 1.5)
-
-		# ── Scale corner handles (orange circle with cross icon) ──
-		var sc := Color(1.0, 0.58, 0.05)
-		for key in ["tl", "tr", "bl", "br"]:
-			var p: Vector2 = handles[key]
-			draw_circle(p, STAMP_HANDLE_R, sc)
-			draw_arc(p, STAMP_HANDLE_R, 0.0, TAU, 12, Color.WHITE, 1.5)
-			var hs := STAMP_HANDLE_R * 0.48
-			draw_line(p + Vector2(-hs, 0), p + Vector2(hs, 0), Color.WHITE, 1.5)
-			draw_line(p + Vector2(0, -hs), p + Vector2(0, hs), Color.WHITE, 1.5)
 
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
@@ -564,40 +518,19 @@ func _on_lmb_down(pos: Vector2) -> void:
 		return
 
 	if stamp_mode and stamp_tex:
-		var img_p := _img(pos)
-		var handles := _get_stamp_gizmo_handles()
-
-		# Priority 1: rotation handle
-		if pos.distance_to(handles.get("rot", Vector2(-9999, -9999))) <= STAMP_HANDLE_R + 6.0:
-			_stamp_gizmo_mode = "rotate"
-			_stamp_gizmo_start_mouse = pos
-			_stamp_gizmo_start_rot = stamp_rotation
-			_stamp_gizmo_start_rot_angle = (pos - stamp_pos * zoom).angle()
-			get_viewport().set_input_as_handled()
-			return
-
-		# Priority 2: scale corner handles
-		for key in ["tl", "tr", "bl", "br"]:
-			if pos.distance_to(handles.get(key, Vector2(-9999, -9999))) <= STAMP_HANDLE_R + 6.0:
-				_stamp_gizmo_mode = "scale"
-				_stamp_gizmo_start_mouse = pos
-				_stamp_gizmo_start_scale = stamp_scale
-				_stamp_gizmo_start_pos = stamp_pos
-				get_viewport().set_input_as_handled()
-				return
-
-		# Priority 3: move (click inside stamp body)
+		var img_p = _img(pos)
 		var xform := Transform2D()
 		xform = xform.translated(stamp_pos)
 		xform = xform.rotated(stamp_rotation)
 		xform = xform.scaled(stamp_scale)
 		xform = xform.translated(-stamp_pivot)
-		var src_pos: Vector2 = xform.affine_inverse() * img_p
+		var inv: Transform2D = xform.affine_inverse()
+		var src_pos: Vector2 = inv * img_p
 		if src_pos.x >= 0 and src_pos.x < stamp_tex.get_width() and src_pos.y >= 0 and src_pos.y < stamp_tex.get_height():
 			_stamp_dragging = true
 			_stamp_drag_offset = stamp_pos - img_p
 			get_viewport().set_input_as_handled()
-		return
+			return
 
 	if brush_erase_mode:
 		_brush_erasing = true
@@ -651,10 +584,6 @@ func _on_lmb_down(pos: Vector2) -> void:
 	queue_redraw()
 
 func _on_lmb_up(pos: Vector2) -> void:
-	if _stamp_gizmo_mode != "":
-		_stamp_gizmo_mode = ""
-		return
-
 	if _stamp_dragging:
 		_stamp_dragging = false
 		return
@@ -750,23 +679,6 @@ func _on_mouse_motion(pos: Vector2) -> void:
 			_recalculate_wand_preview(img_p)
 			queue_redraw()
 
-	if _stamp_gizmo_mode != "" and stamp_tex:
-		match _stamp_gizmo_mode:
-			"rotate":
-				var center := stamp_pos * zoom
-				var new_angle := (pos - center).angle()
-				stamp_rotation = _stamp_gizmo_start_rot + (new_angle - _stamp_gizmo_start_rot_angle)
-				queue_redraw()
-			"scale":
-				var center := _stamp_gizmo_start_pos * zoom
-				var orig_dist := (_stamp_gizmo_start_mouse - center).length()
-				if orig_dist > 1.0:
-					var factor := (pos - center).length() / orig_dist
-					stamp_scale = (_stamp_gizmo_start_scale * factor).clamp(Vector2(0.05, 0.05), Vector2(50.0, 50.0))
-				queue_redraw()
-		accept_event()
-		return
-
 	if _stamp_dragging:
 		var img_p = _img(pos)
 		stamp_pos = img_p + _stamp_drag_offset
@@ -836,33 +748,6 @@ func _on_mouse_motion(pos: Vector2) -> void:
 		rects_changed.emit()
 		queue_redraw()
 
-# ── Stamp gizmo helpers ────────────────────────────────────────
-
-## Maps a stamp-local texel position to canvas pixel space (accounts for zoom, rotation, scale, pivot).
-func _stamp_local_to_canvas(lp: Vector2) -> Vector2:
-	var off := Vector2(
-		(lp.x - stamp_pivot.x) * stamp_scale.x,
-		(lp.y - stamp_pivot.y) * stamp_scale.y
-	) * zoom
-	return stamp_pos * zoom + off.rotated(stamp_rotation)
-
-## Returns canvas-space positions of all gizmo handles.
-func _get_stamp_gizmo_handles() -> Dictionary:
-	if not stamp_tex:
-		return {}
-	var sw := float(stamp_tex.get_width())
-	var sh := float(stamp_tex.get_height())
-	var top_mid := _stamp_local_to_canvas(Vector2(sw * 0.5, 0.0))
-	var up_dir  := Vector2(0.0, -1.0).rotated(stamp_rotation)
-	return {
-		"tl": _stamp_local_to_canvas(Vector2(0.0, 0.0)),
-		"tr": _stamp_local_to_canvas(Vector2(sw,  0.0)),
-		"bl": _stamp_local_to_canvas(Vector2(0.0, sh)),
-		"br": _stamp_local_to_canvas(Vector2(sw,  sh)),
-		"rot":        top_mid + up_dir * STAMP_ROT_DIST,
-		"rot_anchor": top_mid,
-	}
-
 func _recalculate_wand_preview(img_p: Vector2i) -> void:
 	preview_mask.clear()
 	if not texture:
@@ -878,54 +763,42 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 		_preview_mask_tex = null
 		return
 
-	# Use raw bytes to avoid get_pixel overhead in tight BFS loop
-	var raw: PackedByteArray = img.get_data()
-	var si := (img_p.y * W + img_p.x) * 4
-	if raw[si + 3] < 3: # alpha < ~1%
+	var bg := img.get_pixel(img_p.x, img_p.y)
+	if bg.a < 0.01:
 		_preview_mask_tex = null
 		return
 
-	var bg_r := float(raw[si])     / 255.0
-	var bg_g := float(raw[si + 1]) / 255.0
-	var bg_b := float(raw[si + 2]) / 255.0
-	var tol_sq := tolerance * tolerance
-
-	var visited := PackedByteArray()
-	visited.resize(W * H)
-	visited.fill(0)
-
-	# Flat int queue (pixel index = y*W + x)
-	var queue := PackedInt32Array()
+	var visited := {}
+	var queue := [img_p]
 	var head := 0
-	var start_idx := img_p.y * W + img_p.x
-	visited[start_idx] = 1
-	queue.append(start_idx)
-
+	visited[img_p.y * W + img_p.x] = true
+	
 	const MAX_PREVIEW = 8000
-
+	
 	while head < queue.size() and queue.size() < MAX_PREVIEW:
-		var pidx: int = queue[head]
+		var p: Vector2i = queue[head]
 		head += 1
-		var px: int = pidx % W
-		var py: int = pidx / W
-		preview_mask.append(Vector2i(px, py))
-
-		# 4-way neighbors (inline bounds check)
-		var ns: Array = []
-		if px > 0:     ns.append(pidx - 1)
-		if px < W - 1: ns.append(pidx + 1)
-		if py > 0:     ns.append(pidx - W)
-		if py < H - 1: ns.append(pidx + W)
-		for n_idx in ns:
-			if visited[n_idx] == 0:
-				visited[n_idx] = 1
-				var ri := n_idx * 4
-				var dr: float = float(raw[ri])     / 255.0 - bg_r
-				var dg: float = float(raw[ri + 1]) / 255.0 - bg_g
-				var db: float = float(raw[ri + 2]) / 255.0 - bg_b
-				var d_sq: float = dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114
-				if d_sq <= tol_sq:
-					queue.append(n_idx)
+		preview_mask.append(p)
+		
+		# 4-way check
+		var neighbors := [
+			Vector2i(p.x - 1, p.y),
+			Vector2i(p.x + 1, p.y),
+			Vector2i(p.x, p.y - 1),
+			Vector2i(p.x, p.y + 1)
+		]
+		for n in neighbors:
+			if n.x >= 0 and n.x < W and n.y >= 0 and n.y < H:
+				var n_idx: int = n.y * W + n.x
+				if not n_idx in visited:
+					visited[n_idx] = true
+					var c: Color = img.get_pixel(n.x, n.y)
+					var dr: float = c.r - bg.r
+					var dg: float = c.g - bg.g
+					var db: float = c.b - bg.b
+					var dist: float = sqrt(dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114)
+					if dist <= tolerance:
+						queue.append(n)
 
 	if not preview_mask.is_empty():
 		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color
