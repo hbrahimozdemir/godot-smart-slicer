@@ -13,6 +13,7 @@ signal brush_paint_dragged(img_pos: Vector2i)
 signal brush_paint_released()
 signal recolor_clicked(img_pos: Vector2i)
 signal stamp_pos_changed(pos: Vector2)
+signal stamp_rotation_changed(deg: float)
 signal slice_action_started()
 
 var texture: Texture2D = null
@@ -38,6 +39,9 @@ var stamp_rotation: float = 0.0
 var stamp_pivot: Vector2 = Vector2.ZERO
 var _stamp_dragging: bool = false
 var _stamp_drag_offset: Vector2 = Vector2.ZERO
+var _stamp_rotating: bool = false
+var _stamp_rotate_start_angle: float = 0.0
+var _stamp_rotate_start_rot: float = 0.0
 var paint_color: Color = Color.WHITE
 var tolerance: float = 0.18
 var preview_mask: Array[Vector2i] = []
@@ -253,18 +257,24 @@ func _draw() -> void:
 	if stamp_mode and stamp_tex:
 		var draw_pos := stamp_pos * zoom
 		var draw_scale := stamp_scale * zoom
-		var draw_pivot := stamp_pivot * zoom
 		draw_set_transform(draw_pos, stamp_rotation, draw_scale)
-		
+
 		# Draw stamp texture centered on pivot
 		draw_texture(stamp_tex, -stamp_pivot, Color(1.0, 1.0, 1.0, 0.75))
-		
+
 		# Draw selection border
 		var rect := Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height()))
 		draw_rect(rect, Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
-		
+
 		# Restore identity transform
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+		# --- Rotation gizmo handle (identity space, screen coords) ---
+		var center_s := stamp_pos * zoom
+		var rot_handle_s := center_s + Vector2(0.0, -52.0).rotated(stamp_rotation)
+		draw_line(center_s, rot_handle_s, Color(1.0, 0.75, 0.1, 0.9), 1.5)
+		draw_circle(rot_handle_s, 7.0, Color(1.0, 0.6, 0.05, 0.9))
+		draw_arc(rot_handle_s, 7.0, 0.0, TAU, 20, Color.WHITE, 1.5)
 
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
@@ -520,6 +530,17 @@ func _on_lmb_down(pos: Vector2) -> void:
 		return
 
 	if stamp_mode and stamp_tex:
+		# 1. Rotation handle hit test (priority)
+		var center_s := stamp_pos * zoom
+		var rot_handle_s := center_s + Vector2(0.0, -52.0).rotated(stamp_rotation)
+		if pos.distance_to(rot_handle_s) <= 11.0:
+			_stamp_rotating = true
+			_stamp_rotate_start_angle = (pos - center_s).angle()
+			_stamp_rotate_start_rot = stamp_rotation
+			get_viewport().set_input_as_handled()
+			return
+
+		# 2. Body drag
 		var img_p = _img(pos)
 		var xform := Transform2D()
 		xform = xform.translated(stamp_pos)
@@ -586,10 +607,13 @@ func _on_lmb_down(pos: Vector2) -> void:
 	queue_redraw()
 
 func _on_lmb_up(pos: Vector2) -> void:
+	if _stamp_rotating:
+		_stamp_rotating = false
+		return
+
 	if _stamp_dragging:
 		_stamp_dragging = false
 		return
-
 	if _brush_erasing:
 		_brush_erasing = false
 		brush_erase_released.emit()
@@ -680,6 +704,15 @@ func _on_mouse_motion(pos: Vector2) -> void:
 			last_preview_pixel = img_p
 			_recalculate_wand_preview(img_p)
 			queue_redraw()
+
+	if _stamp_rotating:
+		var center_s := stamp_pos * zoom
+		var current_angle := (pos - center_s).angle()
+		var delta := current_angle - _stamp_rotate_start_angle
+		stamp_rotation = _stamp_rotate_start_rot + delta
+		stamp_rotation_changed.emit(rad_to_deg(stamp_rotation))
+		queue_redraw()
+		return
 
 	if _stamp_dragging:
 		var img_p = _img(pos)

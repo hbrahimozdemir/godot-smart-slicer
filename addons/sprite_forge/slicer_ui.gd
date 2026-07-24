@@ -81,6 +81,13 @@ var _stamp_pivot_x: SpinBox
 var _stamp_pivot_y: SpinBox
 var _stamp_rot: SpinBox
 
+# Stamp animation frames
+var _stamp_frames: Array[Texture2D] = []
+var _stamp_frame_idx: int = 0
+var _stamp_frame_label: Label
+var _stamp_prev_frame_btn: Button
+var _stamp_next_frame_btn: Button
+
 var _export_folder_edit: LineEdit
 var _export_base_edit: LineEdit
 
@@ -124,6 +131,7 @@ func _build_ui() -> void:
 	_canvas.brush_paint_released.connect(_on_brush_paint_released)
 	_canvas.recolor_clicked.connect(_on_recolor_clicked)
 	_canvas.stamp_pos_changed.connect(_on_canvas_stamp_pos_changed)
+	_canvas.stamp_rotation_changed.connect(_on_canvas_stamp_rotation_changed)
 	_canvas.slice_action_started.connect(_push_slices_state)
 	scroll.add_child(_canvas)
 
@@ -311,6 +319,45 @@ func _make_toolbar() -> Control:
 				_select_tool("")
 	)
 	tb2.add_child(_stamp_btn)
+
+	# --- Stamp animation frame navigation ---
+	_stamp_prev_frame_btn = Button.new()
+	_stamp_prev_frame_btn.text = "◀"
+	_stamp_prev_frame_btn.custom_minimum_size = Vector2(24, 0)
+	_stamp_prev_frame_btn.disabled = true
+	_stamp_prev_frame_btn.tooltip_text = "Previous frame (animation)"
+	_stamp_prev_frame_btn.pressed.connect(func():
+		_stamp_frame_idx -= 1
+		_update_stamp_frame()
+	)
+	tb2.add_child(_stamp_prev_frame_btn)
+
+	_stamp_frame_label = Label.new()
+	_stamp_frame_label.text = "-/-"
+	_stamp_frame_label.custom_minimum_size = Vector2(32, 0)
+	_stamp_frame_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_stamp_frame_label.tooltip_text = "Current frame / Total frames"
+	tb2.add_child(_stamp_frame_label)
+
+	_stamp_next_frame_btn = Button.new()
+	_stamp_next_frame_btn.text = "▶"
+	_stamp_next_frame_btn.custom_minimum_size = Vector2(24, 0)
+	_stamp_next_frame_btn.disabled = true
+	_stamp_next_frame_btn.tooltip_text = "Next frame (animation)"
+	_stamp_next_frame_btn.pressed.connect(func():
+		_stamp_frame_idx += 1
+		_update_stamp_frame()
+	)
+	tb2.add_child(_stamp_next_frame_btn)
+
+	var stamp_add_frame_btn := Button.new()
+	stamp_add_frame_btn.text = "+ Frame"
+	stamp_add_frame_btn.tooltip_text = "Add another image as next animation frame"
+	stamp_add_frame_btn.pressed.connect(func():
+		if _stamp_dialog:
+			_stamp_dialog.popup_centered_ratio(0.6)
+	)
+	tb2.add_child(stamp_add_frame_btn)
 
 	tb2.add_child(VSeparator.new())
 
@@ -724,7 +771,8 @@ func _setup_stamp_dialog() -> void:
 	_stamp_dialog.add_filter("*.webp", "WebP Images")
 	_stamp_dialog.file_selected.connect(_load_stamp_image)
 	_stamp_dialog.canceled.connect(func():
-		if _stamp_btn:
+		# Henüz frame yüklenmemişse stamp butonunu devre dışı bırak
+		if _stamp_frames.is_empty() and _stamp_btn:
 			_stamp_btn.button_pressed = false
 	)
 	add_child(_stamp_dialog)
@@ -823,7 +871,7 @@ func _setup_grid_dialog() -> void:
 func _on_grid_slice_confirmed() -> void:
 	if not _current_tex:
 		return
-	var img := _current_tex.get_image()
+	var img: Image = _current_tex.get_image()
 	if not img or img.is_empty():
 		return
 	var cell_w := int(_grid_spin_w.value)
@@ -960,6 +1008,14 @@ func _select_tool(tool_name: String) -> void:
 		_canvas.stamp_mode = stamp_on
 		if not stamp_on:
 			_canvas.stamp_tex = null
+			_stamp_frames.clear()
+			_stamp_frame_idx = 0
+			if _stamp_frame_label:
+				_stamp_frame_label.text = "-/-"
+			if _stamp_prev_frame_btn:
+				_stamp_prev_frame_btn.disabled = true
+			if _stamp_next_frame_btn:
+				_stamp_next_frame_btn.disabled = true
 		_canvas.queue_redraw()
 		
 	if _stamp_props_box != null:
@@ -995,30 +1051,47 @@ func _on_paint_toggled(toggled: bool) -> void:
 func _load_stamp_image(path: String) -> void:
 	var tex := load(path) as Texture2D
 	if tex and _canvas and _current_tex:
-		_canvas.stamp_tex = tex
-		
-		# Set default transforms based on current texture center
-		var base_img := _current_tex.get_image()
-		var center_x: float = base_img.get_width() / 2.0
-		var center_y: float = base_img.get_height() / 2.0
-		var pivot_x: float = tex.get_width() / 2.0
-		var pivot_y: float = tex.get_height() / 2.0
-		
-		_canvas.stamp_pos = Vector2(center_x, center_y)
-		_canvas.stamp_scale = Vector2.ONE
-		_canvas.stamp_rotation = 0.0
-		_canvas.stamp_pivot = Vector2(pivot_x, pivot_y)
-		
-		# Update UI
-		if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(center_x)
-		if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(center_y)
-		if _stamp_scale_x: _stamp_scale_x.set_value_no_signal(1.0)
-		if _stamp_scale_y: _stamp_scale_y.set_value_no_signal(1.0)
-		if _stamp_pivot_x: _stamp_pivot_x.set_value_no_signal(pivot_x)
-		if _stamp_pivot_y: _stamp_pivot_y.set_value_no_signal(pivot_y)
-		if _stamp_rot: _stamp_rot.set_value_no_signal(0.0)
-		
+		_stamp_frames.append(tex)
+		_stamp_frame_idx = _stamp_frames.size() - 1
+
+		# First frame: set default transforms based on canvas center
+		if _stamp_frames.size() == 1:
+			var base_img: Image = _current_tex.get_image()
+			if not base_img:
+				return
+			var center_x: float = base_img.get_width() / 2.0
+			var center_y: float = base_img.get_height() / 2.0
+			var pivot_x: float = tex.get_width() / 2.0
+			var pivot_y: float = tex.get_height() / 2.0
+
+			_canvas.stamp_pos = Vector2(center_x, center_y)
+			_canvas.stamp_scale = Vector2.ONE
+			_canvas.stamp_rotation = 0.0
+			_canvas.stamp_pivot = Vector2(pivot_x, pivot_y)
+
+			if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(center_x)
+			if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(center_y)
+			if _stamp_scale_x: _stamp_scale_x.set_value_no_signal(1.0)
+			if _stamp_scale_y: _stamp_scale_y.set_value_no_signal(1.0)
+			if _stamp_pivot_x: _stamp_pivot_x.set_value_no_signal(pivot_x)
+			if _stamp_pivot_y: _stamp_pivot_y.set_value_no_signal(pivot_y)
+			if _stamp_rot: _stamp_rot.set_value_no_signal(0.0)
+
+		_update_stamp_frame()
 		_select_tool("stamp")
+
+func _update_stamp_frame() -> void:
+	if _stamp_frames.is_empty() or not _canvas:
+		return
+	_stamp_frame_idx = clamp(_stamp_frame_idx, 0, _stamp_frames.size() - 1)
+	_canvas.stamp_tex = _stamp_frames[_stamp_frame_idx]
+	_canvas.queue_redraw()
+	if _stamp_frame_label:
+		_stamp_frame_label.text = "%d/%d" % [_stamp_frame_idx + 1, _stamp_frames.size()]
+	if _stamp_prev_frame_btn:
+		_stamp_prev_frame_btn.disabled = (_stamp_frame_idx == 0)
+	if _stamp_next_frame_btn:
+		_stamp_next_frame_btn.disabled = (_stamp_frame_idx >= _stamp_frames.size() - 1)
 
 func _assign_material_to_selected(path: String) -> void:
 	if not _canvas or _canvas.selected_indices.size() != 1:
@@ -1038,6 +1111,9 @@ func _on_canvas_stamp_pos_changed(pos: Vector2) -> void:
 	if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(pos.x)
 	if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(pos.y)
 
+func _on_canvas_stamp_rotation_changed(deg: float) -> void:
+	if _stamp_rot: _stamp_rot.set_value_no_signal(fmod(deg, 360.0))
+
 func _on_stamp_prop_changed() -> void:
 	if not _canvas or not _canvas.stamp_tex:
 		return
@@ -1048,12 +1124,14 @@ func _on_stamp_prop_changed() -> void:
 	_canvas.queue_redraw()
 
 func _apply_stamp() -> void:
-	if not _current_tex or _current_tex_path.is_empty() or not _canvas.stamp_tex:
+	if not _current_tex or _current_tex_path.is_empty() or not _canvas or not _canvas.stamp_tex:
 		return
 	_push_image_state()
 	_ensure_edited_path()
-	var base_img := _current_tex.get_image()
-	var stamp_img := _canvas.stamp_tex.get_image()
+	var base_img: Image = _current_tex.get_image()
+	var stamp_img: Image = _canvas.stamp_tex.get_image()
+	if not base_img or not stamp_img:
+		return
 	
 	var result := _BgRemover.paste_stamp_transformed(
 		base_img,
@@ -1091,12 +1169,16 @@ func _on_brush_erase_released() -> void:
 func _do_brush_erase(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
-	var src_img := _current_tex.get_image()
+	var src_img: Image = _current_tex.get_image()
+	if src_img == null or src_img.is_empty():
+		return
+	# Kopya üzerinde çalış — brush_erase in-place değiştirir
+	var work_img := src_img.duplicate()
 	var b_size: int = 8
 	if _brush_size_spin != null:
 		b_size = int(_brush_size_spin.value)
 	var is_sq: bool = _canvas.brush_is_square if _canvas else false
-	var result := _BgRemover.brush_erase(src_img, img_pos.x, img_pos.y, b_size, is_sq)
+	var result := _BgRemover.brush_erase(work_img, img_pos.x, img_pos.y, b_size, is_sq)
 	if result == null or result.is_empty():
 		return
 
@@ -1118,13 +1200,17 @@ func _on_brush_paint_released() -> void:
 func _do_brush_paint(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
-	var src_img := _current_tex.get_image()
+	var src_img: Image = _current_tex.get_image()
+	if src_img == null or src_img.is_empty():
+		return
+	# Kopya üzerinde çalış — brush_paint in-place değiştirir
+	var work_img := src_img.duplicate()
 	var b_size: int = 8
 	if _brush_size_spin != null:
 		b_size = int(_brush_size_spin.value)
 	var col := _color_picker.color if _color_picker else Color.WHITE
 	var is_sq: bool = _canvas.brush_is_square if _canvas else false
-	var result := _BgRemover.brush_paint(src_img, img_pos.x, img_pos.y, b_size, col, is_sq)
+	var result := _BgRemover.brush_paint(work_img, img_pos.x, img_pos.y, b_size, col, is_sq)
 	if result == null or result.is_empty():
 		return
 
@@ -1135,9 +1221,11 @@ func _do_brush_paint(img_pos: Vector2i) -> void:
 func _on_recolor_clicked(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
+	var src_img: Image = _current_tex.get_image()
+	if src_img == null or src_img.is_empty():
+		return
 	_push_image_state()
 	_ensure_edited_path()
-	var src_img := _current_tex.get_image()
 	var col := _color_picker.color if _color_picker else Color.WHITE
 	var result := _BgRemover.magic_wand_recolor(src_img, img_pos.x, img_pos.y, col, _bg_tolerance)
 	if result == null or result.is_empty():
@@ -1154,19 +1242,21 @@ func _on_recolor_clicked(img_pos: Vector2i) -> void:
 func _on_erase_clicked(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
 		return
+	var src_img: Image = _current_tex.get_image()
+	if src_img == null or src_img.is_empty():
+		return
 	_push_image_state()
 	_ensure_edited_path()
-	var src_img := _current_tex.get_image()
 	var result := _BgRemover.magic_wand_erase(src_img, img_pos.x, img_pos.y, _bg_tolerance)
 	if result == null or result.is_empty():
 		return
-		
+
 	var abs_out := ProjectSettings.globalize_path(_current_tex_path)
 	var err := result.save_png(abs_out)
 	if err != OK:
 		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
 		return
-		
+
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
@@ -1457,7 +1547,7 @@ func _push_history_state(state: Dictionary) -> void:
 func _push_image_state() -> void:
 	if not _current_tex:
 		return
-	var img = _current_tex.get_image()
+	var img: Image = _current_tex.get_image()
 	if img and not img.is_empty():
 		var img_copy = Image.new()
 		img_copy.copy_from(img)
@@ -1500,14 +1590,15 @@ func _apply_history_state(state: Dictionary, push_to: Array) -> void:
 	var current_state := {}
 
 	if state["type"] == "image":
-		var img := _current_tex.get_image()
-		var img_copy := Image.new()
-		img_copy.copy_from(img)
-		current_state = {
-			"type": "image",
-			"image": img_copy,
-			"path": _current_tex_path
-		}
+		var img: Image = _current_tex.get_image()
+		if img and not img.is_empty():
+			var img_copy := Image.new()
+			img_copy.copy_from(img)
+			current_state = {
+				"type": "image",
+				"image": img_copy,
+				"path": _current_tex_path
+			}
 
 		var prev_img: Image = state["image"]
 		var prev_path: String = state["path"]
