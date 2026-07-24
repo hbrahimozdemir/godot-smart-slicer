@@ -38,6 +38,12 @@ var stamp_rotation: float = 0.0
 var stamp_pivot: Vector2 = Vector2.ZERO
 var _stamp_dragging: bool = false
 var _stamp_drag_offset: Vector2 = Vector2.ZERO
+var _stamp_gizmo_mode: String = ""   # "", "scale", "rotate"
+var _stamp_gizmo_start_mouse: Vector2 = Vector2.ZERO
+var _stamp_gizmo_start_scale: Vector2 = Vector2.ONE
+var _stamp_gizmo_start_rot: float = 0.0
+var _stamp_gizmo_start_rot_angle: float = 0.0
+var _stamp_gizmo_start_pos: Vector2 = Vector2.ZERO
 var paint_color: Color = Color.WHITE
 var tolerance: float = 0.18
 var preview_mask: Array[Vector2i] = []
@@ -80,6 +86,8 @@ var _pan_start_mouse: Vector2 = Vector2.ZERO
 var _pan_start_scroll: Vector2 = Vector2.ZERO
 
 const HANDLE_R: float = 5.0
+const STAMP_HANDLE_R: float = 7.0
+const STAMP_ROT_DIST: float = 32.0
 
 func _ready() -> void:
 	focus_mode = FOCUS_CLICK
@@ -274,20 +282,33 @@ func _draw() -> void:
 
 	# Draw stamp preview
 	if stamp_mode and stamp_tex:
-		var draw_pos := stamp_pos * zoom
-		var draw_scale := stamp_scale * zoom
-		var draw_pivot := stamp_pivot * zoom
-		draw_set_transform(draw_pos, stamp_rotation, draw_scale)
-		
-		# Draw stamp texture centered on pivot
+		draw_set_transform(stamp_pos * zoom, stamp_rotation, stamp_scale * zoom)
+
+		# Texture + bounding border (in stamp's local space)
 		draw_texture(stamp_tex, -stamp_pivot, Color(1.0, 1.0, 1.0, 0.75))
-		
-		# Draw selection border
-		var rect := Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height()))
-		draw_rect(rect, Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
-		
-		# Restore identity transform
+		draw_rect(Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height())),
+			Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
+
+		# Restore to canvas space for gizmo handles
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+		var handles := _get_stamp_gizmo_handles()
+
+		# ── Rotation handle (blue circle with arc icon + stem line) ──
+		draw_line(handles["rot_anchor"], handles["rot"], Color(1.0, 1.0, 1.0, 0.55), 1.5)
+		draw_circle(handles["rot"], STAMP_HANDLE_R, Color(0.12, 0.70, 1.0))
+		draw_arc(handles["rot"], STAMP_HANDLE_R, 0.0, TAU, 20, Color.WHITE, 1.5)
+		draw_arc(handles["rot"], STAMP_HANDLE_R * 0.50, PI * 0.30, PI * 1.70, 12, Color.WHITE, 1.5)
+
+		# ── Scale corner handles (orange circle with cross icon) ──
+		var sc := Color(1.0, 0.58, 0.05)
+		for key in ["tl", "tr", "bl", "br"]:
+			var p: Vector2 = handles[key]
+			draw_circle(p, STAMP_HANDLE_R, sc)
+			draw_arc(p, STAMP_HANDLE_R, 0.0, TAU, 12, Color.WHITE, 1.5)
+			var hs := STAMP_HANDLE_R * 0.48
+			draw_line(p + Vector2(-hs, 0), p + Vector2(hs, 0), Color.WHITE, 1.5)
+			draw_line(p + Vector2(0, -hs), p + Vector2(0, hs), Color.WHITE, 1.5)
 
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
@@ -543,19 +564,40 @@ func _on_lmb_down(pos: Vector2) -> void:
 		return
 
 	if stamp_mode and stamp_tex:
-		var img_p = _img(pos)
+		var img_p := _img(pos)
+		var handles := _get_stamp_gizmo_handles()
+
+		# Priority 1: rotation handle
+		if pos.distance_to(handles.get("rot", Vector2(-9999, -9999))) <= STAMP_HANDLE_R + 6.0:
+			_stamp_gizmo_mode = "rotate"
+			_stamp_gizmo_start_mouse = pos
+			_stamp_gizmo_start_rot = stamp_rotation
+			_stamp_gizmo_start_rot_angle = (pos - stamp_pos * zoom).angle()
+			get_viewport().set_input_as_handled()
+			return
+
+		# Priority 2: scale corner handles
+		for key in ["tl", "tr", "bl", "br"]:
+			if pos.distance_to(handles.get(key, Vector2(-9999, -9999))) <= STAMP_HANDLE_R + 6.0:
+				_stamp_gizmo_mode = "scale"
+				_stamp_gizmo_start_mouse = pos
+				_stamp_gizmo_start_scale = stamp_scale
+				_stamp_gizmo_start_pos = stamp_pos
+				get_viewport().set_input_as_handled()
+				return
+
+		# Priority 3: move (click inside stamp body)
 		var xform := Transform2D()
 		xform = xform.translated(stamp_pos)
 		xform = xform.rotated(stamp_rotation)
 		xform = xform.scaled(stamp_scale)
 		xform = xform.translated(-stamp_pivot)
-		var inv: Transform2D = xform.affine_inverse()
-		var src_pos: Vector2 = inv * img_p
+		var src_pos: Vector2 = xform.affine_inverse() * img_p
 		if src_pos.x >= 0 and src_pos.x < stamp_tex.get_width() and src_pos.y >= 0 and src_pos.y < stamp_tex.get_height():
 			_stamp_dragging = true
 			_stamp_drag_offset = stamp_pos - img_p
 			get_viewport().set_input_as_handled()
-			return
+		return
 
 	if brush_erase_mode:
 		_brush_erasing = true
@@ -609,6 +651,10 @@ func _on_lmb_down(pos: Vector2) -> void:
 	queue_redraw()
 
 func _on_lmb_up(pos: Vector2) -> void:
+	if _stamp_gizmo_mode != "":
+		_stamp_gizmo_mode = ""
+		return
+
 	if _stamp_dragging:
 		_stamp_dragging = false
 		return
@@ -704,6 +750,23 @@ func _on_mouse_motion(pos: Vector2) -> void:
 			_recalculate_wand_preview(img_p)
 			queue_redraw()
 
+	if _stamp_gizmo_mode != "" and stamp_tex:
+		match _stamp_gizmo_mode:
+			"rotate":
+				var center := stamp_pos * zoom
+				var new_angle := (pos - center).angle()
+				stamp_rotation = _stamp_gizmo_start_rot + (new_angle - _stamp_gizmo_start_rot_angle)
+				queue_redraw()
+			"scale":
+				var center := _stamp_gizmo_start_pos * zoom
+				var orig_dist := (_stamp_gizmo_start_mouse - center).length()
+				if orig_dist > 1.0:
+					var factor := (pos - center).length() / orig_dist
+					stamp_scale = (_stamp_gizmo_start_scale * factor).clamp(Vector2(0.05, 0.05), Vector2(50.0, 50.0))
+				queue_redraw()
+		accept_event()
+		return
+
 	if _stamp_dragging:
 		var img_p = _img(pos)
 		stamp_pos = img_p + _stamp_drag_offset
@@ -772,6 +835,33 @@ func _on_mouse_motion(pos: Vector2) -> void:
 		rects[idx] = new_r
 		rects_changed.emit()
 		queue_redraw()
+
+# ── Stamp gizmo helpers ────────────────────────────────────────
+
+## Maps a stamp-local texel position to canvas pixel space (accounts for zoom, rotation, scale, pivot).
+func _stamp_local_to_canvas(lp: Vector2) -> Vector2:
+	var off := Vector2(
+		(lp.x - stamp_pivot.x) * stamp_scale.x,
+		(lp.y - stamp_pivot.y) * stamp_scale.y
+	) * zoom
+	return stamp_pos * zoom + off.rotated(stamp_rotation)
+
+## Returns canvas-space positions of all gizmo handles.
+func _get_stamp_gizmo_handles() -> Dictionary:
+	if not stamp_tex:
+		return {}
+	var sw := float(stamp_tex.get_width())
+	var sh := float(stamp_tex.get_height())
+	var top_mid := _stamp_local_to_canvas(Vector2(sw * 0.5, 0.0))
+	var up_dir  := Vector2(0.0, -1.0).rotated(stamp_rotation)
+	return {
+		"tl": _stamp_local_to_canvas(Vector2(0.0, 0.0)),
+		"tr": _stamp_local_to_canvas(Vector2(sw,  0.0)),
+		"bl": _stamp_local_to_canvas(Vector2(0.0, sh)),
+		"br": _stamp_local_to_canvas(Vector2(sw,  sh)),
+		"rot":        top_mid + up_dir * STAMP_ROT_DIST,
+		"rot_anchor": top_mid,
+	}
 
 func _recalculate_wand_preview(img_p: Vector2i) -> void:
 	preview_mask.clear()
