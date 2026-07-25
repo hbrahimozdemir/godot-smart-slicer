@@ -836,15 +836,22 @@ func _on_rmb_up(pos: Vector2) -> void:
 		queue_redraw()
 
 func _on_mouse_motion(pos: Vector2) -> void:
+	var needs_redraw := false
+
 	if brush_erase_mode or paint_mode or frame_mode or erase_mode or recolor_mode:
 		hover_mouse_pos = pos
 		is_hovering = true
+		needs_redraw = true
 
 	if (erase_mode or recolor_mode) and texture:
 		var img_p := Vector2i(_img(pos))
 		if img_p != last_preview_pixel:
 			last_preview_pixel = img_p
 			_recalculate_wand_preview(img_p)
+			needs_redraw = true
+
+	if needs_redraw:
+		queue_redraw()
 
 	if _frame_scaling:
 		var center_s := frame_pos * zoom
