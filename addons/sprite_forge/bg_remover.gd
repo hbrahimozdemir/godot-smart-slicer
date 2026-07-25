@@ -1,5 +1,4 @@
 @tool
-class_name BgRemover
 
 # Perceptual color distance flood-fill background remover with alpha matting.
 
@@ -313,6 +312,8 @@ static func paste_frame_transformed(
 	scale: Vector2,
 	rotation: float,
 	pivot: Vector2,
+	flip_h: bool = false,
+	flip_v: bool = false,
 	order_behind: bool = false
 ) -> Image:
 	base_image.convert(Image.FORMAT_RGBA8)
@@ -323,11 +324,14 @@ static func paste_frame_transformed(
 	var src_w := frame_image.get_width()
 	var src_h := frame_image.get_height()
 	
+	var f_scale := scale
+	if flip_h: f_scale.x *= -1.0
+	if flip_v: f_scale.y *= -1.0
+	
 	var xform := Transform2D()
-	xform = xform.translated(pos)
-	xform = xform.rotated(rotation)
-	xform = xform.scaled(scale)
-	xform = xform.translated(-pivot)
+	xform.x = Vector2(cos(rotation), sin(rotation)) * f_scale.x
+	xform.y = Vector2(-sin(rotation), cos(rotation)) * f_scale.y
+	xform.origin = pos - (xform.x * pivot.x + xform.y * pivot.y)
 	
 	var inv := xform.affine_inverse()
 	

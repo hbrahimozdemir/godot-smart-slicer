@@ -22,6 +22,7 @@ var _preview_bg_color: ColorRect
 var _preview_bg_checker: TextureRect
 
 func _ready() -> void:
+	set_process(false)
 	add_theme_constant_override("separation", 4)
 	
 	var title_hbox := HBoxContainer.new()
@@ -131,6 +132,7 @@ func sync_preview(tex: Texture2D, list_rects: Array[Rect2], sel_indices: Array) 
 
 func _process(delta: float) -> void:
 	if not _preview_playing or _preview_indices.is_empty():
+		set_process(false)
 		return
 	_preview_frame_time += delta
 	var interval: float = 1.0 / max(1.0, _preview_fps)
@@ -142,6 +144,7 @@ func _process(delta: float) -> void:
 func _on_preview_play_pressed() -> void:
 	_preview_playing = !_preview_playing
 	_preview_play_btn.text = "Pause" if _preview_playing else "Play"
+	set_process(_preview_playing)
 	if _preview_playing:
 		_update_preview_indices()
 

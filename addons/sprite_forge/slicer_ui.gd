@@ -140,6 +140,7 @@ func _build_ui() -> void:
 	_canvas.mouse_filter = Control.MOUSE_FILTER_STOP
 	_canvas.selection_changed.connect(_on_canvas_selection_changed)
 	_canvas.rects_changed.connect(_on_rects_changed)
+	_canvas.rects_updated.connect(_on_rects_updated)
 	_canvas.zoom_changed.connect(_on_canvas_zoom_changed)
 	_canvas.erase_clicked.connect(_on_erase_clicked)
 	_canvas.brush_erase_clicked.connect(_on_brush_erase_clicked)
@@ -214,6 +215,20 @@ func _make_toolbar() -> Control:
 	clear_btn.tooltip_text = "Remove all slices"
 	clear_btn.pressed.connect(_on_clear)
 	tb1.add_child(clear_btn)
+
+	tb1.add_child(VSeparator.new())
+	
+	var flip_h_btn := Button.new()
+	flip_h_btn.text = "↔"
+	flip_h_btn.tooltip_text = "Flip Image Horizontally"
+	flip_h_btn.pressed.connect(func(): _flip_main_texture(true, false))
+	tb1.add_child(flip_h_btn)
+	
+	var flip_v_btn := Button.new()
+	flip_v_btn.text = "↕"
+	flip_v_btn.tooltip_text = "Flip Image Vertically"
+	flip_v_btn.pressed.connect(func(): _flip_main_texture(false, true))
+	tb1.add_child(flip_v_btn)
 
 	tb1.add_child(VSeparator.new())
 
@@ -559,6 +574,26 @@ func _make_right_panel() -> PanelContainer:
 	var stamp_actions := HBoxContainer.new()
 	stamp_actions.add_theme_constant_override("separation", 6)
 	_stamp_props_box.add_child(stamp_actions)
+	
+	var stamp_flip_h := Button.new()
+	stamp_flip_h.text = "↔"
+	stamp_flip_h.tooltip_text = "Flip Horizontal"
+	stamp_flip_h.pressed.connect(func():
+		if _canvas:
+			_canvas.frame_flip_h = not _canvas.frame_flip_h
+			_canvas.queue_redraw()
+	)
+	stamp_actions.add_child(stamp_flip_h)
+	
+	var stamp_flip_v := Button.new()
+	stamp_flip_v.text = "↕"
+	stamp_flip_v.tooltip_text = "Flip Vertical"
+	stamp_flip_v.pressed.connect(func():
+		if _canvas:
+			_canvas.frame_flip_v = not _canvas.frame_flip_v
+			_canvas.queue_redraw()
+	)
+	stamp_actions.add_child(stamp_flip_v)
 
 	var apply_stamp_btn := Button.new()
 	apply_stamp_btn.text = "Apply Frame"
@@ -639,6 +674,26 @@ func _make_right_panel() -> PanelContainer:
 	var text_actions := HBoxContainer.new()
 	text_actions.add_theme_constant_override("separation", 6)
 	_text_props_box.add_child(text_actions)
+	
+	var text_flip_h := Button.new()
+	text_flip_h.text = "↔"
+	text_flip_h.tooltip_text = "Flip Horizontal"
+	text_flip_h.pressed.connect(func():
+		if _canvas:
+			_canvas.frame_flip_h = not _canvas.frame_flip_h
+			_canvas.queue_redraw()
+	)
+	text_actions.add_child(text_flip_h)
+	
+	var text_flip_v := Button.new()
+	text_flip_v.text = "↕"
+	text_flip_v.tooltip_text = "Flip Vertical"
+	text_flip_v.pressed.connect(func():
+		if _canvas:
+			_canvas.frame_flip_v = not _canvas.frame_flip_v
+			_canvas.queue_redraw()
+	)
+	text_actions.add_child(text_flip_v)
 
 	var apply_text_btn := Button.new()
 	apply_text_btn.text = "Apply Text"
@@ -955,14 +1010,34 @@ func _on_browse() -> void:
 # --- Action handlers ---
 
 func _load_texture(path: String) -> void:
-	var tex = load(path)
-	if not tex is Texture2D:
+	var tex: Texture2D = null
+	var res = load(path)
+	if res is Texture2D:
+		tex = res
+	elif res is Image:
+		tex = ImageTexture.create_from_image(res)
+	elif res != null and res.has_method("get_image"):
+		var img: Image = res.get_image()
+		if img and not img.is_empty():
+			tex = ImageTexture.create_from_image(img)
+
+	if tex == null:
+		# Fallback: load directly from file system (useful for unimported PNGs or external paths)
+		var abs_p := ProjectSettings.globalize_path(path)
+		var img := Image.load_from_file(abs_p)
+		if img and not img.is_empty():
+			tex = ImageTexture.create_from_image(img)
+
+	if tex == null:
+		push_error("SpriteForge: Could not load texture from path: " + path)
 		return
+
 	if _history:
 		_history.clear()
 	_current_tex      = tex
 	_current_tex_path = path
 	_path_label.text  = path.get_file()
+	_path_label.tooltip_text = path
 	_canvas.load_texture(tex)
 	_canvas.set_zoom(1.0)
 	_refresh_list()
@@ -989,6 +1064,42 @@ func _on_clear() -> void:
 	_canvas.locked_states.clear()
 	_canvas.queue_redraw()
 	_refresh_list()
+	_update_props()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
+
+func _flip_main_texture(flip_h: bool, flip_v: bool) -> void:
+	if not _current_tex or _current_tex_path.is_empty():
+		return
+	_push_image_state()
+	_ensure_edited_path()
+	var img: Image = _current_tex.get_image()
+	if not img:
+		return
+	
+	if flip_h:
+		img.flip_x()
+	if flip_v:
+		img.flip_y()
+		
+	var new_tex := ImageTexture.create_from_image(img)
+	_current_tex = new_tex
+	_canvas.update_texture(new_tex)
+	_save_edited_texture()
+	
+	# Flip all rects symmetrically
+	var w := float(img.get_width())
+	var h := float(img.get_height())
+	
+	for i in range(_canvas.rects.size()):
+		var r: Rect2 = _canvas.rects[i]
+		if flip_h:
+			r.position.x = w - r.position.x - r.size.x
+		if flip_v:
+			r.position.y = h - r.position.y - r.size.y
+		_canvas.rects[i] = r
+	
+	_canvas.queue_redraw()
 	_update_props()
 	if _preview_player:
 		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
@@ -1091,6 +1202,9 @@ func _select_tool(tool_name: String) -> void:
 		_props_box.visible = not stamp_on and not text_on and not _canvas.selected_indices.is_empty() if _canvas else false
 
 	if text_on:
+		_canvas.frame_tex = null
+		_stamp_frames.clear()
+		_stamp_frame_idx = 0
 		_update_text_preview()
 
 func _update_button_modulations() -> void:
@@ -1165,6 +1279,8 @@ func _load_stamp_image(path: String) -> void:
 			_canvas.frame_scale = Vector2.ONE
 			_canvas.frame_rotation = 0.0
 			_canvas.frame_pivot = Vector2(pivot_x, pivot_y)
+			_canvas.frame_flip_h = false
+			_canvas.frame_flip_v = false
 
 			if _stamp_pos_x: _stamp_pos_x.set_value_no_signal(center_x)
 			if _stamp_pos_y: _stamp_pos_y.set_value_no_signal(center_y)
@@ -1181,7 +1297,16 @@ func _update_stamp_frame() -> void:
 	if _stamp_frames.is_empty() or not _canvas:
 		return
 	_stamp_frame_idx = clamp(_stamp_frame_idx, 0, _stamp_frames.size() - 1)
-	_canvas.stamp_tex = _stamp_frames[_stamp_frame_idx]
+	var curr_tex: Texture2D = _stamp_frames[_stamp_frame_idx]
+	_canvas.stamp_tex = curr_tex
+
+	if curr_tex:
+		var pivot_x: float = curr_tex.get_width() / 2.0
+		var pivot_y: float = curr_tex.get_height() / 2.0
+		_canvas.frame_pivot = Vector2(pivot_x, pivot_y)
+		if _stamp_pivot_x: _stamp_pivot_x.set_value_no_signal(pivot_x)
+		if _stamp_pivot_y: _stamp_pivot_y.set_value_no_signal(pivot_y)
+
 	_canvas.queue_redraw()
 	if _stamp_frame_label:
 		_stamp_frame_label.text = "%d/%d" % [_stamp_frame_idx + 1, _stamp_frames.size()]
@@ -1243,6 +1368,8 @@ func _apply_stamp() -> void:
 		_canvas.frame_scale,
 		_canvas.frame_rotation,
 		_canvas.frame_pivot,
+		_canvas.frame_flip_h,
+		_canvas.frame_flip_v,
 		order_behind
 	)
 	
@@ -1468,6 +1595,13 @@ func _on_rects_changed() -> void:
 	if _preview_player:
 		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
 
+func _on_rects_updated(indices: Array) -> void:
+	for idx in indices:
+		_update_list_item(idx)
+	_update_props()
+	if _preview_player:
+		_preview_player.sync_preview(_current_tex, _canvas.rects, _canvas.selected_indices)
+
 func _on_list_item_selected(_index: int) -> void:
 	var selected: PackedInt32Array = _slice_list.get_selected_items()
 	var canvas_selected: Array = []
@@ -1656,7 +1790,8 @@ func _push_image_state() -> void:
 		_push_history_state({
 			"type": "image",
 			"image": img_copy,
-			"path": _current_tex_path
+			"path": _current_tex_path,
+			"rects": _canvas.rects.duplicate()
 		})
 
 func _push_slices_state() -> void:
@@ -1694,7 +1829,8 @@ func _apply_history_state(state: Dictionary) -> Dictionary:
 			current_state = {
 				"type": "image",
 				"image": img_copy,
-				"path": _current_tex_path
+				"path": _current_tex_path,
+				"rects": _canvas.rects.duplicate()
 			}
 
 		var prev_img: Image = state["image"]
@@ -1707,6 +1843,9 @@ func _apply_history_state(state: Dictionary) -> Dictionary:
 			var new_tex := ImageTexture.create_from_image(prev_img)
 			_current_tex = new_tex
 			_canvas.load_texture(new_tex)
+			if state.has("rects"):
+				_canvas.rects = state["rects"].duplicate()
+			_canvas.queue_redraw()
 			if _preview_player:
 				_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 
@@ -1775,7 +1914,8 @@ func _update_text_preview() -> void:
 		var pivot_x: float = tex.get_width() / 2.0
 		var pivot_y: float = tex.get_height() / 2.0
 
-		if _canvas.frame_tex == null:
+		var is_first_text_init: bool = (_canvas.frame_tex == null or not _canvas.frame_mode)
+		if is_first_text_init:
 			var base_img: Image = _current_tex.get_image()
 			if base_img:
 				var center_x: float = base_img.get_width() / 2.0

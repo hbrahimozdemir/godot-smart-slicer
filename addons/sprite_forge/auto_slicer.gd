@@ -1,5 +1,4 @@
 @tool
-class_name AutoSlicer
 
 ## BFS-based sprite auto-slicer.
 ## Uses PackedInt32Array queues and bulk raw pixel access for maximum throughput.

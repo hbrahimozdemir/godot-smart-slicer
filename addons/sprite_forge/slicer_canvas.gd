@@ -3,6 +3,7 @@ extends Control
 
 signal selection_changed(indices: Array)
 signal rects_changed()
+signal rects_updated(indices: Array)
 signal zoom_changed(new_zoom: float)
 signal erase_clicked(img_pos: Vector2i)
 signal brush_erase_clicked(img_pos: Vector2i)
@@ -15,9 +16,11 @@ signal recolor_clicked(img_pos: Vector2i)
 signal frame_pos_changed(pos: Vector2)
 signal frame_rotation_changed(deg: float)
 signal frame_scale_changed(scale: Vector2)
+signal frame_flip_changed(h: bool, v: bool)
 signal stamp_pos_changed(pos: Vector2)
 signal stamp_rotation_changed(deg: float)
 signal stamp_scale_changed(scale: Vector2)
+signal stamp_flip_changed(h: bool, v: bool)
 signal slice_action_started()
 
 var texture: Texture2D = null
@@ -41,6 +44,8 @@ var frame_pos: Vector2 = Vector2.ZERO
 var frame_scale: Vector2 = Vector2.ONE
 var frame_rotation: float = 0.0
 var frame_pivot: Vector2 = Vector2.ZERO
+var frame_flip_h: bool = false
+var frame_flip_v: bool = false
 var order_behind: bool = false
 
 var _frame_dragging: bool = false
@@ -48,9 +53,11 @@ var _frame_drag_offset: Vector2 = Vector2.ZERO
 var _frame_rotating: bool = false
 var _frame_rotate_start_angle: float = 0.0
 var _frame_rotate_start_rot: float = 0.0
+var _frame_rotate_center_s: Vector2 = Vector2.ZERO
 var _frame_scaling: bool = false
 var _frame_scale_start_dist: float = 1.0
 var _frame_scale_start_scale: Vector2 = Vector2.ONE
+var _frame_scale_center_s: Vector2 = Vector2.ZERO
 
 # Aliases for backwards compatibility / legacy access
 var stamp_mode: bool:
@@ -175,6 +182,31 @@ func set_zoom(z: float) -> void:
 	zoom_changed.emit(zoom)
 	queue_redraw()
 
+## Cursor-anchored zooming: keeps the pixel under mouse stationary during zoom
+func _zoom_at_point(target_zoom: float, mouse_pos: Vector2) -> void:
+	var old_zoom := zoom
+	var new_zoom := clamp(target_zoom, 0.1, 8.0)
+	if abs(old_zoom - new_zoom) < 0.001:
+		return
+
+	var parent = get_parent()
+	var scroll_container: ScrollContainer = parent if parent is ScrollContainer else null
+	var old_scroll := Vector2.ZERO
+	if scroll_container:
+		old_scroll = Vector2(scroll_container.scroll_horizontal, scroll_container.scroll_vertical)
+
+	zoom = new_zoom
+	_update_min_size()
+	zoom_changed.emit(zoom)
+	queue_redraw()
+
+	if scroll_container:
+		var ratio: float = new_zoom / old_zoom
+		var new_scroll_x := int(round((old_scroll.x + mouse_pos.x) * ratio - mouse_pos.x))
+		var new_scroll_y := int(round((old_scroll.y + mouse_pos.y) * ratio - mouse_pos.y))
+		scroll_container.scroll_horizontal = max(0, new_scroll_x)
+		scroll_container.scroll_vertical = max(0, new_scroll_y)
+
 # --- Internal helpers ---
 
 func _update_min_size() -> void:
@@ -271,7 +303,23 @@ func _draw() -> void:
 
 	# Draw slices (font fetched once)
 	var font := get_theme_font("font")
+	
+	# Viewport culling optimization
+	var has_vis_rect := false
+	var vis_rect := Rect2()
+	var parent := get_parent()
+	if parent is ScrollContainer:
+		var sc := parent as ScrollContainer
+		vis_rect = Rect2(sc.scroll_horizontal, sc.scroll_vertical, sc.size.x, sc.size.y)
+		# Expand by a margin to prevent popping when scrolling fast
+		vis_rect = vis_rect.grow(100.0)
+		has_vis_rect = true
+
 	for i in range(rects.size()):
+		if has_vis_rect:
+			var sr: Rect2 = _s(rects[i])
+			if not vis_rect.intersects(sr):
+				continue
 		_draw_slice(i, font)
 
 	# Drag selection box preview
@@ -309,12 +357,14 @@ func _draw() -> void:
 		_draw_frame_gizmo()
 
 func _get_frame_transform_screen() -> Transform2D:
-	var xform := Transform2D()
-	xform = xform.translated(frame_pos * zoom)
-	xform = xform.rotated(frame_rotation)
-	xform = xform.scaled(frame_scale * zoom)
-	xform = xform.translated(-frame_pivot)
-	return xform
+	var t := Transform2D()
+	var zscale := frame_scale * zoom
+	if frame_flip_h: zscale.x *= -1.0
+	if frame_flip_v: zscale.y *= -1.0
+	t.x = Vector2(cos(frame_rotation), sin(frame_rotation)) * zscale.x
+	t.y = Vector2(-sin(frame_rotation), cos(frame_rotation)) * zscale.y
+	t.origin = (frame_pos * zoom) - (t.x * frame_pivot.x + t.y * frame_pivot.y)
+	return t
 
 func _get_frame_corners_screen() -> Dictionary:
 	if not frame_tex:
@@ -322,17 +372,15 @@ func _get_frame_corners_screen() -> Dictionary:
 	var xform := _get_frame_transform_screen()
 	var w := float(frame_tex.get_width())
 	var h := float(frame_tex.get_height())
-	var center_s := frame_pos * zoom
+	var center_s := xform * Vector2(w * 0.5, h * 0.5)
 	var top_mid := xform * Vector2(w * 0.5, 0.0)
-	var rot_dir := (top_mid - center_s).normalized()
-	if rot_dir.length_squared() < 0.001:
-		rot_dir = Vector2.UP
-	var rot_handle := top_mid + rot_dir * 32.0
+	var rot_handle := xform * Vector2(w * 0.5, -32.0 / (frame_scale.y * zoom))
 	return {
 		"tl": xform * Vector2(0, 0),
 		"tr": xform * Vector2(w, 0),
 		"bl": xform * Vector2(0, h),
 		"br": xform * Vector2(w, h),
+		"center": center_s,
 		"top_mid": top_mid,
 		"rot_handle": rot_handle
 	}
@@ -340,6 +388,8 @@ func _get_frame_corners_screen() -> Dictionary:
 func _draw_frame_texture() -> void:
 	var draw_pos := frame_pos * zoom
 	var draw_scale := frame_scale * zoom
+	if frame_flip_h: draw_scale.x *= -1.0
+	if frame_flip_v: draw_scale.y *= -1.0
 	draw_set_transform(draw_pos, frame_rotation, draw_scale)
 	draw_texture(frame_tex, -frame_pivot, Color(1.0, 1.0, 1.0, 0.75))
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
@@ -348,50 +398,63 @@ func _draw_frame_gizmo() -> void:
 	if not frame_tex:
 		return
 
-	var corners := _get_frame_corners_screen()
-	if corners.is_empty():
-		return
+	var w := float(frame_tex.get_width())
+	var h := float(frame_tex.get_height())
+	var draw_pos := frame_pos * zoom
+	var draw_scale := frame_scale * zoom
+	if frame_flip_h: draw_scale.x *= -1.0
+	if frame_flip_v: draw_scale.y *= -1.0
+	var eff_scale := draw_scale.abs()
 
-	var tl: Vector2 = corners["tl"]
-	var tr: Vector2 = corners["tr"]
-	var br: Vector2 = corners["br"]
-	var bl: Vector2 = corners["bl"]
+	# Apply exact same GPU matrix as _draw_frame_texture()
+	draw_set_transform(draw_pos, frame_rotation, draw_scale)
 
-	# Draw semi-transparent background fill & 2-pass border for maximum visibility
+	# Local rectangle corners relative to pivot
+	var tl: Vector2 = -frame_pivot
+	var tr: Vector2 = -frame_pivot + Vector2(w, 0.0)
+	var br: Vector2 = -frame_pivot + Vector2(w, h)
+	var bl: Vector2 = -frame_pivot + Vector2(0.0, h)
+
 	var poly := PackedVector2Array([tl, tr, br, bl])
-	draw_polyline(poly + PackedVector2Array([tl]), Color(0.0, 0.0, 0.0, 0.95), 3.5) # Outer black outline
-	draw_polyline(poly + PackedVector2Array([tl]), Color(0.1, 0.85, 1.0, 1.0), 2.0) # Inner cyan outline
+	var line_w: float = 2.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
+	var shadow_w: float = 3.5 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
+
+	# High contrast bounding box & fill
+	draw_polyline(poly + PackedVector2Array([tl]), Color(0.0, 0.0, 0.0, 0.95), shadow_w)
+	draw_polyline(poly + PackedVector2Array([tl]), Color(0.1, 0.85, 1.0, 1.0), line_w)
 	draw_colored_polygon(poly, Color(0.1, 0.75, 1.0, 0.12))
 
-	# Draw 4 Corner Scale handles
-	var handle_radius := 7.0
-	var corner_list := [tl, tr, bl, br]
-	for cp in corner_list:
-		draw_circle(cp, handle_radius, Color(0.1, 0.85, 1.0))
-		draw_arc(cp, handle_radius, 0.0, TAU, 20, Color.WHITE, 1.5)
+	# 4 Corner scale handles
+	var handle_r_avg: float = 7.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
+	for cp in [tl, tr, bl, br]:
+		draw_circle(cp, handle_r_avg, Color(0.1, 0.85, 1.0))
+		draw_arc(cp, handle_r_avg, 0.0, TAU, 20, Color.WHITE, line_w)
 
-	# Draw Rotation handle with ↻ rotation icon
-	var top_mid: Vector2 = corners["top_mid"]
-	var rot_handle: Vector2 = corners["rot_handle"]
-	var rot_radius := 9.0
-	draw_line(top_mid, rot_handle, Color(1.0, 0.75, 0.1, 0.9), 2.0)
-	draw_circle(rot_handle, rot_radius, Color(1.0, 0.55, 0.0, 0.95))
-	draw_arc(rot_handle, rot_radius, 0.0, TAU, 24, Color.WHITE, 1.8)
+	# Rotation handle
+	var top_mid: Vector2 = -frame_pivot + Vector2(w * 0.5, 0.0)
+	var rot_off_y: float = -32.0 / max(0.001, eff_scale.y)
+	var rot_handle: Vector2 = top_mid + Vector2(0.0, rot_off_y)
+	var rot_r_avg: float = 9.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
+
+	draw_line(top_mid, rot_handle, Color(1.0, 0.75, 0.1, 0.9), line_w * 1.2)
+	draw_circle(rot_handle, rot_r_avg, Color(1.0, 0.55, 0.0, 0.95))
+	draw_arc(rot_handle, rot_r_avg, 0.0, TAU, 24, Color.WHITE, line_w * 1.2)
 
 	# ↻ Icon inside rotation handle
-	var arc_r := 4.5
-	draw_arc(rot_handle, arc_r, -0.6 * PI, 1.1 * PI, 16, Color.WHITE, 1.8)
-	var tip_angle := 1.1 * PI
-	var tip_pos := rot_handle + Vector2(cos(tip_angle), sin(tip_angle)) * arc_r
-	var arrow_p1 := tip_pos + Vector2(3.0, -2.0)
-	var arrow_p2 := tip_pos + Vector2(-1.0, 3.0)
-	draw_line(tip_pos, arrow_p1, Color.WHITE, 1.8)
-	draw_line(tip_pos, arrow_p2, Color.WHITE, 1.8)
+	var arc_r: float = rot_r_avg * 0.5
+	draw_arc(rot_handle, arc_r, -0.6 * PI, 1.1 * PI, 16, Color.WHITE, line_w * 1.2)
+	var tip_angle: float = 1.1 * PI
+	var tip_pos: Vector2 = rot_handle + Vector2(cos(tip_angle), sin(tip_angle)) * arc_r
+	var arrow_p1: Vector2 = tip_pos + Vector2(3.0 / eff_scale.x, -2.0 / eff_scale.y)
+	var arrow_p2: Vector2 = tip_pos + Vector2(-1.0 / eff_scale.x, 3.0 / eff_scale.y)
+	draw_line(tip_pos, arrow_p1, Color.WHITE, line_w * 1.2)
+	draw_line(tip_pos, arrow_p2, Color.WHITE, line_w * 1.2)
 
-	# Draw pivot marker
-	var center_s := frame_pos * zoom
-	draw_circle(center_s, 4.0, Color(1.0, 0.3, 0.3, 0.9))
-	draw_arc(center_s, 4.0, 0.0, TAU, 16, Color.WHITE, 1.0)
+	# Pivot marker at center
+	draw_circle(Vector2.ZERO, 4.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5), Color(1.0, 0.3, 0.3, 0.9))
+
+	# Restore default transform
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
@@ -463,11 +526,11 @@ func _gui_input(event: InputEvent) -> void:
 
 	if event is InputEventMouseButton:
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
-			set_zoom(zoom * 1.15)
+			_zoom_at_point(zoom * 1.15, event.position)
 			accept_event()
 			return
 		if event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
-			set_zoom(zoom / 1.15)
+			_zoom_at_point(zoom / 1.15, event.position)
 			accept_event()
 			return
 
@@ -511,7 +574,7 @@ func _gui_input(event: InputEvent) -> void:
 			return
 
 		_on_mouse_motion(event.position)
-		if _dragging or _selecting or _frame_dragging:
+		if _dragging or _selecting or _frame_dragging or _frame_scaling or _frame_rotating:
 			accept_event()
 			return
 
@@ -641,7 +704,7 @@ func _input(event: InputEvent) -> void:
 						
 					rects[idx] = Rect2(new_pos, r.size)
 					
-			rects_changed.emit()
+			rects_updated.emit(selected_indices)
 			queue_redraw()
 			get_viewport().set_input_as_handled()
 
@@ -659,38 +722,45 @@ func _on_lmb_down(pos: Vector2) -> void:
 
 	if frame_mode and frame_tex:
 		var corners := _get_frame_corners_screen()
-		var center_s := frame_pos * zoom
+		var center_s: Vector2 = corners.get("center", frame_pos * zoom)
 
-		# 1. Corner Scale Handle hit tests (priority 1)
-		for c_name in ["tl", "tr", "bl", "br"]:
-			if c_name in corners:
-				var corner_pt: Vector2 = corners[c_name]
-				if pos.distance_to(corner_pt) <= 12.0:
-					_frame_scaling = true
-					_frame_scale_start_dist = max(1.0, pos.distance_to(center_s))
-					_frame_scale_start_scale = frame_scale
-					get_viewport().set_input_as_handled()
-					return
-
-		# 2. Rotation handle hit test (priority 2)
+		# 1. Rotation handle hit test (priority 1)
 		if "rot_handle" in corners:
 			var rot_handle_s: Vector2 = corners["rot_handle"]
-			if pos.distance_to(rot_handle_s) <= 12.0:
+			if pos.distance_to(rot_handle_s) <= 28.0:
 				_frame_rotating = true
-				_frame_rotate_start_angle = (pos - center_s).angle()
+				_frame_rotate_center_s = center_s
+				_frame_rotate_start_angle = (pos - _frame_rotate_center_s).angle()
 				_frame_rotate_start_rot = frame_rotation
 				get_viewport().set_input_as_handled()
 				return
 
-		# 3. Body drag (generous hit box around frame area)
+		# 2. Corner Scale Handle hit tests (priority 2)
+		for c_name in ["tl", "tr", "bl", "br"]:
+			if c_name in corners:
+				var corner_pt: Vector2 = corners[c_name]
+				if pos.distance_to(corner_pt) <= 25.0:
+					_frame_scaling = true
+					_frame_scale_center_s = center_s
+					_frame_scale_start_dist = max(1.0, pos.distance_to(_frame_scale_center_s))
+					_frame_scale_start_scale = frame_scale
+					get_viewport().set_input_as_handled()
+					return
+
+		# 3. Body drag (only inside texture bounds)
 		var img_p := _img(pos)
-		var xform := Transform2D().translated(frame_pos).rotated(frame_rotation).scaled(frame_scale).translated(-frame_pivot)
-		var inv: Transform2D = xform.affine_inverse()
+		var t := Transform2D()
+		var f_scale := frame_scale
+		if frame_flip_h: f_scale.x *= -1.0
+		if frame_flip_v: f_scale.y *= -1.0
+		t.x = Vector2(cos(frame_rotation), sin(frame_rotation)) * f_scale.x
+		t.y = Vector2(-sin(frame_rotation), cos(frame_rotation)) * f_scale.y
+		t.origin = frame_pos - (t.x * frame_pivot.x + t.y * frame_pivot.y)
+		var inv: Transform2D = t.affine_inverse()
 		var src_pos: Vector2 = inv * img_p
 		var w := float(frame_tex.get_width())
 		var h := float(frame_tex.get_height())
-		var margin: float = 12.0 / max(0.1, min(frame_scale.x, frame_scale.y))
-		if src_pos.x >= -margin and src_pos.x <= w + margin and src_pos.y >= -margin and src_pos.y <= h + margin:
+		if src_pos.x >= 0 and src_pos.x <= w and src_pos.y >= 0 and src_pos.y <= h:
 			_frame_dragging = true
 			_frame_drag_offset = frame_pos - img_p
 			get_viewport().set_input_as_handled()
@@ -854,8 +924,7 @@ func _on_mouse_motion(pos: Vector2) -> void:
 		queue_redraw()
 
 	if _frame_scaling:
-		var center_s := frame_pos * zoom
-		var current_dist := pos.distance_to(center_s)
+		var current_dist := pos.distance_to(_frame_scale_center_s)
 		var ratio := current_dist / _frame_scale_start_dist
 		frame_scale = _frame_scale_start_scale * ratio
 		frame_scale.x = clamp(frame_scale.x, 0.05, 50.0)
@@ -866,8 +935,7 @@ func _on_mouse_motion(pos: Vector2) -> void:
 		return
 
 	if _frame_rotating:
-		var center_s := frame_pos * zoom
-		var current_angle := (pos - center_s).angle()
+		var current_angle := (pos - _frame_rotate_center_s).angle()
 		var delta := current_angle - _frame_rotate_start_angle
 		frame_rotation = _frame_rotate_start_rot + delta
 		frame_rotation_changed.emit(rad_to_deg(frame_rotation))
@@ -913,7 +981,7 @@ func _on_mouse_motion(pos: Vector2) -> void:
 			var start_r: Rect2 = _drag_start_rects[idx]
 			var new_pos = snap_point(start_r.position + raw_d)
 			rects[idx] = Rect2(new_pos, start_r.size)
-		rects_changed.emit()
+		rects_updated.emit(selected_indices)
 		queue_redraw()
 		
 	elif _drag_mode == "tl" or _drag_mode == "tr" or _drag_mode == "bl" or _drag_mode == "br":
@@ -942,7 +1010,7 @@ func _on_mouse_motion(pos: Vector2) -> void:
 				new_r = Rect2(p1, p2 - p1).abs()
 				
 		rects[idx] = new_r
-		rects_changed.emit()
+		rects_updated.emit(selected_indices)
 		queue_redraw()
 
 func _recalculate_wand_preview(img_p: Vector2i) -> void:

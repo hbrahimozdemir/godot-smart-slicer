@@ -1,5 +1,4 @@
 @tool
-class_name SpriteExtractor
 
 ## SpriteForge slice extractor.
 ## Exports PNG slices, AtlasTextures, Shader scenes and SpriteFrames.
