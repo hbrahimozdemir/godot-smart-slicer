@@ -12,8 +12,12 @@ signal brush_paint_clicked(img_pos: Vector2i)
 signal brush_paint_dragged(img_pos: Vector2i)
 signal brush_paint_released()
 signal recolor_clicked(img_pos: Vector2i)
+signal frame_pos_changed(pos: Vector2)
+signal frame_rotation_changed(deg: float)
+signal frame_scale_changed(scale: Vector2)
 signal stamp_pos_changed(pos: Vector2)
 signal stamp_rotation_changed(deg: float)
+signal stamp_scale_changed(scale: Vector2)
 signal slice_action_started()
 
 var texture: Texture2D = null
@@ -31,17 +35,42 @@ var erase_mode: bool = false
 var brush_erase_mode: bool = false
 var paint_mode: bool = false
 var recolor_mode: bool = false
-var stamp_mode: bool = false
-var stamp_tex: Texture2D = null
-var stamp_pos: Vector2 = Vector2.ZERO
-var stamp_scale: Vector2 = Vector2.ONE
-var stamp_rotation: float = 0.0
-var stamp_pivot: Vector2 = Vector2.ZERO
-var _stamp_dragging: bool = false
-var _stamp_drag_offset: Vector2 = Vector2.ZERO
-var _stamp_rotating: bool = false
-var _stamp_rotate_start_angle: float = 0.0
-var _stamp_rotate_start_rot: float = 0.0
+var frame_mode: bool = false
+var frame_tex: Texture2D = null
+var frame_pos: Vector2 = Vector2.ZERO
+var frame_scale: Vector2 = Vector2.ONE
+var frame_rotation: float = 0.0
+var frame_pivot: Vector2 = Vector2.ZERO
+var order_behind: bool = false
+
+var _frame_dragging: bool = false
+var _frame_drag_offset: Vector2 = Vector2.ZERO
+var _frame_rotating: bool = false
+var _frame_rotate_start_angle: float = 0.0
+var _frame_rotate_start_rot: float = 0.0
+var _frame_scaling: bool = false
+var _frame_scale_start_dist: float = 1.0
+var _frame_scale_start_scale: Vector2 = Vector2.ONE
+
+# Aliases for backwards compatibility / legacy access
+var stamp_mode: bool:
+	get: return frame_mode
+	set(v): frame_mode = v
+var stamp_tex: Texture2D:
+	get: return frame_tex
+	set(v): frame_tex = v
+var stamp_pos: Vector2:
+	get: return frame_pos
+	set(v): frame_pos = v
+var stamp_scale: Vector2:
+	get: return frame_scale
+	set(v): frame_scale = v
+var stamp_rotation: float:
+	get: return frame_rotation
+	set(v): frame_rotation = v
+var stamp_pivot: Vector2:
+	get: return frame_pivot
+	set(v): frame_pivot = v
 var paint_color: Color = Color.WHITE
 var tolerance: float = 0.18
 var preview_mask: Array[Vector2i] = []
@@ -67,6 +96,9 @@ var _drag_mode: String = ""   # "move" | "create" | "tl" | "tr" | "bl" | "br"
 var _drag_start_mouse_img: Vector2
 var _drag_start_rects: Dictionary = {} # maps index (int) -> Rect2
 
+# O(1) membership lookup for selected_indices (rebuilt on every selection change)
+var _selected_set: Dictionary = {}
+
 # Create-preview (Right-click drag)
 var _creating: bool = false
 var _create_p1: Vector2 = Vector2.ZERO
@@ -87,6 +119,7 @@ const HANDLE_R: float = 5.0
 
 func _ready() -> void:
 	focus_mode = FOCUS_CLICK
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_MOUSE_EXIT:
@@ -102,6 +135,7 @@ func load_texture(tex: Texture2D) -> void:
 	slice_names.clear()
 	slice_materials.clear()
 	selected_indices.clear()
+	_selected_set.clear()
 	locked_states.clear()
 	_update_min_size()
 	queue_redraw()
@@ -127,6 +161,7 @@ func set_rects(new_rects: Array[Rect2]) -> void:
 
 func select_rect(index: int) -> void:
 	selected_indices = [index]
+	_selected_set = { index: true }
 	queue_redraw()
 
 func update_rect_at(index: int, r: Rect2) -> void:
@@ -147,6 +182,14 @@ func _update_min_size() -> void:
 		custom_minimum_size = Vector2(texture.get_width(), texture.get_height()) * zoom + Vector2(1, 1)
 	else:
 		custom_minimum_size = Vector2(256, 256)
+
+## Rebuilds _selected_set from selected_indices and emits selection_changed.
+## Always call this instead of emitting the signal directly.
+func _emit_selection_changed() -> void:
+	_selected_set.clear()
+	for idx in selected_indices:
+		_selected_set[idx] = true
+	selection_changed.emit(selected_indices)
 
 func _s(r: Rect2) -> Rect2:
 	return Rect2(r.position * zoom, r.size * zoom)
@@ -198,9 +241,17 @@ func _draw() -> void:
 	if not texture:
 		return
 
+	# If order_behind is true, draw frame texture underneath main texture
+	if order_behind and frame_mode and frame_tex:
+		_draw_frame_texture()
+
 	# Draw main texture (scaled by zoom)
 	var tex_size := Vector2(texture.get_width(), texture.get_height()) * zoom
 	draw_texture_rect(texture, Rect2(Vector2.ZERO, tex_size), false)
+
+	# If order_behind is false, draw frame texture on top of main texture
+	if not order_behind and frame_mode and frame_tex:
+		_draw_frame_texture()
 
 	# Draw grid snap visual helpers if active
 	if snap_to_grid:
@@ -253,28 +304,94 @@ func _draw() -> void:
 		var overlay_size := Vector2(texture.get_width(), texture.get_height()) * zoom
 		draw_texture_rect(_preview_mask_tex, Rect2(Vector2.ZERO, overlay_size), false)
 
-	# Draw stamp preview
-	if stamp_mode and stamp_tex:
-		var draw_pos := stamp_pos * zoom
-		var draw_scale := stamp_scale * zoom
-		draw_set_transform(draw_pos, stamp_rotation, draw_scale)
+	# Draw frame gizmo handles
+	if frame_mode and frame_tex:
+		_draw_frame_gizmo()
 
-		# Draw stamp texture centered on pivot
-		draw_texture(stamp_tex, -stamp_pivot, Color(1.0, 1.0, 1.0, 0.75))
+func _get_frame_transform_screen() -> Transform2D:
+	var xform := Transform2D()
+	xform = xform.translated(frame_pos * zoom)
+	xform = xform.rotated(frame_rotation)
+	xform = xform.scaled(frame_scale * zoom)
+	xform = xform.translated(-frame_pivot)
+	return xform
 
-		# Draw selection border
-		var rect := Rect2(-stamp_pivot, Vector2(stamp_tex.get_width(), stamp_tex.get_height()))
-		draw_rect(rect, Color(0.3, 0.8, 1.0, 0.8), false, 1.0 / zoom)
+func _get_frame_corners_screen() -> Dictionary:
+	if not frame_tex:
+		return {}
+	var xform := _get_frame_transform_screen()
+	var w := float(frame_tex.get_width())
+	var h := float(frame_tex.get_height())
+	var center_s := frame_pos * zoom
+	var top_mid := xform * Vector2(w * 0.5, 0.0)
+	var rot_dir := (top_mid - center_s).normalized()
+	if rot_dir.length_squared() < 0.001:
+		rot_dir = Vector2.UP
+	var rot_handle := top_mid + rot_dir * 32.0
+	return {
+		"tl": xform * Vector2(0, 0),
+		"tr": xform * Vector2(w, 0),
+		"bl": xform * Vector2(0, h),
+		"br": xform * Vector2(w, h),
+		"top_mid": top_mid,
+		"rot_handle": rot_handle
+	}
 
-		# Restore identity transform
-		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+func _draw_frame_texture() -> void:
+	var draw_pos := frame_pos * zoom
+	var draw_scale := frame_scale * zoom
+	draw_set_transform(draw_pos, frame_rotation, draw_scale)
+	draw_texture(frame_tex, -frame_pivot, Color(1.0, 1.0, 1.0, 0.75))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
-		# --- Rotation gizmo handle (identity space, screen coords) ---
-		var center_s := stamp_pos * zoom
-		var rot_handle_s := center_s + Vector2(0.0, -52.0).rotated(stamp_rotation)
-		draw_line(center_s, rot_handle_s, Color(1.0, 0.75, 0.1, 0.9), 1.5)
-		draw_circle(rot_handle_s, 7.0, Color(1.0, 0.6, 0.05, 0.9))
-		draw_arc(rot_handle_s, 7.0, 0.0, TAU, 20, Color.WHITE, 1.5)
+func _draw_frame_gizmo() -> void:
+	if not frame_tex:
+		return
+
+	var corners := _get_frame_corners_screen()
+	if corners.is_empty():
+		return
+
+	var tl: Vector2 = corners["tl"]
+	var tr: Vector2 = corners["tr"]
+	var br: Vector2 = corners["br"]
+	var bl: Vector2 = corners["bl"]
+
+	# Draw semi-transparent background fill & 2-pass border for maximum visibility
+	var poly := PackedVector2Array([tl, tr, br, bl])
+	draw_polyline(poly + PackedVector2Array([tl]), Color(0.0, 0.0, 0.0, 0.95), 3.5) # Outer black outline
+	draw_polyline(poly + PackedVector2Array([tl]), Color(0.1, 0.85, 1.0, 1.0), 2.0) # Inner cyan outline
+	draw_colored_polygon(poly, Color(0.1, 0.75, 1.0, 0.12))
+
+	# Draw 4 Corner Scale handles
+	var handle_radius := 7.0
+	var corner_list := [tl, tr, bl, br]
+	for cp in corner_list:
+		draw_circle(cp, handle_radius, Color(0.1, 0.85, 1.0))
+		draw_arc(cp, handle_radius, 0.0, TAU, 20, Color.WHITE, 1.5)
+
+	# Draw Rotation handle with ↻ rotation icon
+	var top_mid: Vector2 = corners["top_mid"]
+	var rot_handle: Vector2 = corners["rot_handle"]
+	var rot_radius := 9.0
+	draw_line(top_mid, rot_handle, Color(1.0, 0.75, 0.1, 0.9), 2.0)
+	draw_circle(rot_handle, rot_radius, Color(1.0, 0.55, 0.0, 0.95))
+	draw_arc(rot_handle, rot_radius, 0.0, TAU, 24, Color.WHITE, 1.8)
+
+	# ↻ Icon inside rotation handle
+	var arc_r := 4.5
+	draw_arc(rot_handle, arc_r, -0.6 * PI, 1.1 * PI, 16, Color.WHITE, 1.8)
+	var tip_angle := 1.1 * PI
+	var tip_pos := rot_handle + Vector2(cos(tip_angle), sin(tip_angle)) * arc_r
+	var arrow_p1 := tip_pos + Vector2(3.0, -2.0)
+	var arrow_p2 := tip_pos + Vector2(-1.0, 3.0)
+	draw_line(tip_pos, arrow_p1, Color.WHITE, 1.8)
+	draw_line(tip_pos, arrow_p2, Color.WHITE, 1.8)
+
+	# Draw pivot marker
+	var center_s := frame_pos * zoom
+	draw_circle(center_s, 4.0, Color(1.0, 0.3, 0.3, 0.9))
+	draw_arc(center_s, 4.0, 0.0, TAU, 16, Color.WHITE, 1.0)
 
 func _draw_checkerboard() -> void:
 	if _checker_tex == null:
@@ -292,16 +409,27 @@ func _draw_checkerboard() -> void:
 
 func _draw_slice(i: int, font: Font) -> void:
 	var sr: Rect2 = _s(rects[i])
-	var is_sel := i in selected_indices
+	var is_sel := _selected_set.has(i)
 	var is_locked := i < locked_states.size() and locked_states[i]
+
+	# Pre-defined color constants to avoid repeated Color literal allocations
+	const COL_SEL_LOCKED_FILL  := Color(0.60, 0.60, 0.60, 0.15)
+	const COL_SEL_LOCKED_BORDER:= Color(0.55, 0.55, 0.55, 1.00)
+	const COL_SEL_FILL         := Color(0.15, 1.00, 0.25, 0.20)
+	const COL_SEL_BORDER       := Color(0.10, 1.00, 0.20, 1.00)
+	const COL_HANDLE_RED       := Color(1.0, 0.2, 0.2)
+	const COL_NORM_LOCKED_FILL := Color(0.50, 0.50, 0.50, 0.08)
+	const COL_NORM_LOCKED_BDR  := Color(0.50, 0.50, 0.50, 0.65)
+	const COL_NORM_FILL        := Color(1.00, 0.85, 0.00, 0.12)
+	const COL_NORM_BORDER      := Color(1.00, 0.85, 0.00, 0.90)
 
 	if is_sel:
 		if is_locked:
-			draw_rect(sr, Color(0.60, 0.60, 0.60, 0.15), true)
-			draw_rect(sr, Color(0.55, 0.55, 0.55, 1.00), false, 2.0)
+			draw_rect(sr, COL_SEL_LOCKED_FILL, true)
+			draw_rect(sr, COL_SEL_LOCKED_BORDER, false, 2.0)
 		else:
-			draw_rect(sr, Color(0.15, 1.00, 0.25, 0.20), true)
-			draw_rect(sr, Color(0.10, 1.00, 0.20, 1.00), false, 2.0)
+			draw_rect(sr, COL_SEL_FILL, true)
+			draw_rect(sr, COL_SEL_BORDER, false, 2.0)
 			
 			# Show handles only when exactly one slice is selected
 			if selected_indices.size() == 1:
@@ -312,15 +440,15 @@ func _draw_slice(i: int, font: Font) -> void:
 					sr.end
 				]
 				for cp in corners:
-					draw_circle(cp, HANDLE_R, Color(1.0, 0.2, 0.2))
+					draw_circle(cp, HANDLE_R, COL_HANDLE_RED)
 					draw_arc(cp, HANDLE_R, 0.0, TAU, 20, Color.WHITE, 1.5)
 	else:
 		if is_locked:
-			draw_rect(sr, Color(0.50, 0.50, 0.50, 0.08), true)
-			draw_rect(sr, Color(0.50, 0.50, 0.50, 0.65), false, 1.5)
+			draw_rect(sr, COL_NORM_LOCKED_FILL, true)
+			draw_rect(sr, COL_NORM_LOCKED_BDR, false, 1.5)
 		else:
-			draw_rect(sr, Color(1.00, 0.85, 0.00, 0.12), true)
-			draw_rect(sr, Color(1.00, 0.85, 0.00, 0.90), false, 1.5)
+			draw_rect(sr, COL_NORM_FILL, true)
+			draw_rect(sr, COL_NORM_BORDER, false, 1.5)
 
 	var label_col := Color(0.5, 0.5, 0.5) if is_locked else (Color(0.1, 1.0, 0.2) if is_sel else Color(1.0, 0.9, 0.1))
 	var label_txt := "L " + str(i) if is_locked else str(i)
@@ -383,7 +511,7 @@ func _gui_input(event: InputEvent) -> void:
 			return
 
 		_on_mouse_motion(event.position)
-		if _dragging or _selecting or _stamp_dragging:
+		if _dragging or _selecting or _frame_dragging:
 			accept_event()
 			return
 
@@ -420,7 +548,7 @@ func _input(event: InputEvent) -> void:
 				selected_indices.clear()
 				for i in range(rects.size()):
 					selected_indices.append(i)
-				selection_changed.emit(selected_indices)
+				_emit_selection_changed()
 				queue_redraw()
 				get_viewport().set_input_as_handled()
 				return
@@ -429,7 +557,7 @@ func _input(event: InputEvent) -> void:
 			if key_event.keycode == KEY_ESCAPE:
 				if not selected_indices.is_empty():
 					selected_indices.clear()
-					selection_changed.emit(selected_indices)
+					_emit_selection_changed()
 					queue_redraw()
 					get_viewport().set_input_as_handled()
 					return
@@ -445,7 +573,7 @@ func _input(event: InputEvent) -> void:
 				for idx in selected_indices:
 					if idx < locked_states.size():
 						locked_states[idx] = any_unlocked
-				selection_changed.emit(selected_indices)
+				_emit_selection_changed()
 				queue_redraw()
 				get_viewport().set_input_as_handled()
 				return
@@ -529,29 +657,42 @@ func _on_lmb_down(pos: Vector2) -> void:
 		recolor_clicked.emit(Vector2i(img_p))
 		return
 
-	if stamp_mode and stamp_tex:
-		# 1. Rotation handle hit test (priority)
-		var center_s := stamp_pos * zoom
-		var rot_handle_s := center_s + Vector2(0.0, -52.0).rotated(stamp_rotation)
-		if pos.distance_to(rot_handle_s) <= 11.0:
-			_stamp_rotating = true
-			_stamp_rotate_start_angle = (pos - center_s).angle()
-			_stamp_rotate_start_rot = stamp_rotation
-			get_viewport().set_input_as_handled()
-			return
+	if frame_mode and frame_tex:
+		var corners := _get_frame_corners_screen()
+		var center_s := frame_pos * zoom
 
-		# 2. Body drag
-		var img_p = _img(pos)
-		var xform := Transform2D()
-		xform = xform.translated(stamp_pos)
-		xform = xform.rotated(stamp_rotation)
-		xform = xform.scaled(stamp_scale)
-		xform = xform.translated(-stamp_pivot)
+		# 1. Corner Scale Handle hit tests (priority 1)
+		for c_name in ["tl", "tr", "bl", "br"]:
+			if c_name in corners:
+				var corner_pt: Vector2 = corners[c_name]
+				if pos.distance_to(corner_pt) <= 12.0:
+					_frame_scaling = true
+					_frame_scale_start_dist = max(1.0, pos.distance_to(center_s))
+					_frame_scale_start_scale = frame_scale
+					get_viewport().set_input_as_handled()
+					return
+
+		# 2. Rotation handle hit test (priority 2)
+		if "rot_handle" in corners:
+			var rot_handle_s: Vector2 = corners["rot_handle"]
+			if pos.distance_to(rot_handle_s) <= 12.0:
+				_frame_rotating = true
+				_frame_rotate_start_angle = (pos - center_s).angle()
+				_frame_rotate_start_rot = frame_rotation
+				get_viewport().set_input_as_handled()
+				return
+
+		# 3. Body drag (generous hit box around frame area)
+		var img_p := _img(pos)
+		var xform := Transform2D().translated(frame_pos).rotated(frame_rotation).scaled(frame_scale).translated(-frame_pivot)
 		var inv: Transform2D = xform.affine_inverse()
 		var src_pos: Vector2 = inv * img_p
-		if src_pos.x >= 0 and src_pos.x < stamp_tex.get_width() and src_pos.y >= 0 and src_pos.y < stamp_tex.get_height():
-			_stamp_dragging = true
-			_stamp_drag_offset = stamp_pos - img_p
+		var w := float(frame_tex.get_width())
+		var h := float(frame_tex.get_height())
+		var margin: float = 12.0 / max(0.1, min(frame_scale.x, frame_scale.y))
+		if src_pos.x >= -margin and src_pos.x <= w + margin and src_pos.y >= -margin and src_pos.y <= h + margin:
+			_frame_dragging = true
+			_frame_drag_offset = frame_pos - img_p
 			get_viewport().set_input_as_handled()
 			return
 
@@ -585,7 +726,7 @@ func _on_lmb_down(pos: Vector2) -> void:
 				selected_indices.append(clicked)
 			else:
 				selected_indices = [clicked]
-			selection_changed.emit(selected_indices)
+			_emit_selection_changed()
 
 		_dragging = true
 		_drag_mode = "move"
@@ -603,16 +744,20 @@ func _on_lmb_down(pos: Vector2) -> void:
 	
 	if not (Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_SHIFT)):
 		selected_indices.clear()
-		selection_changed.emit(selected_indices)
+		_emit_selection_changed()
 	queue_redraw()
 
 func _on_lmb_up(pos: Vector2) -> void:
-	if _stamp_rotating:
-		_stamp_rotating = false
+	if _frame_scaling:
+		_frame_scaling = false
 		return
 
-	if _stamp_dragging:
-		_stamp_dragging = false
+	if _frame_rotating:
+		_frame_rotating = false
+		return
+
+	if _frame_dragging:
+		_frame_dragging = false
 		return
 	if _brush_erasing:
 		_brush_erasing = false
@@ -649,7 +794,7 @@ func _on_lmb_up(pos: Vector2) -> void:
 			if not (Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_SHIFT)):
 				selected_indices.clear()
 				
-		selection_changed.emit(selected_indices)
+		_emit_selection_changed()
 		queue_redraw()
 		
 	elif _dragging:
@@ -685,39 +830,49 @@ func _on_rmb_up(pos: Vector2) -> void:
 				slice_materials.append("")
 				locked_states.append(false)
 				selected_indices = [rects.size() - 1]
-				selection_changed.emit(selected_indices)
+				_emit_selection_changed()
 				rects_changed.emit()
 				
 		queue_redraw()
 
 func _on_mouse_motion(pos: Vector2) -> void:
-	if brush_erase_mode or paint_mode or stamp_mode:
+	if brush_erase_mode or paint_mode or frame_mode or erase_mode or recolor_mode:
 		hover_mouse_pos = pos
 		is_hovering = true
-		queue_redraw()
-		
+
 	if (erase_mode or recolor_mode) and texture:
-		hover_mouse_pos = pos
-		is_hovering = true
 		var img_p := Vector2i(_img(pos))
 		if img_p != last_preview_pixel:
 			last_preview_pixel = img_p
 			_recalculate_wand_preview(img_p)
-			queue_redraw()
 
-	if _stamp_rotating:
-		var center_s := stamp_pos * zoom
-		var current_angle := (pos - center_s).angle()
-		var delta := current_angle - _stamp_rotate_start_angle
-		stamp_rotation = _stamp_rotate_start_rot + delta
-		stamp_rotation_changed.emit(rad_to_deg(stamp_rotation))
+	if _frame_scaling:
+		var center_s := frame_pos * zoom
+		var current_dist := pos.distance_to(center_s)
+		var ratio := current_dist / _frame_scale_start_dist
+		frame_scale = _frame_scale_start_scale * ratio
+		frame_scale.x = clamp(frame_scale.x, 0.05, 50.0)
+		frame_scale.y = clamp(frame_scale.y, 0.05, 50.0)
+		frame_scale_changed.emit(frame_scale)
+		stamp_scale_changed.emit(frame_scale)
 		queue_redraw()
 		return
 
-	if _stamp_dragging:
+	if _frame_rotating:
+		var center_s := frame_pos * zoom
+		var current_angle := (pos - center_s).angle()
+		var delta := current_angle - _frame_rotate_start_angle
+		frame_rotation = _frame_rotate_start_rot + delta
+		frame_rotation_changed.emit(rad_to_deg(frame_rotation))
+		stamp_rotation_changed.emit(rad_to_deg(frame_rotation))
+		queue_redraw()
+		return
+
+	if _frame_dragging:
 		var img_p = _img(pos)
-		stamp_pos = img_p + _stamp_drag_offset
-		stamp_pos_changed.emit(stamp_pos)
+		frame_pos = img_p + _frame_drag_offset
+		frame_pos_changed.emit(frame_pos)
+		stamp_pos_changed.emit(frame_pos)
 		queue_redraw()
 		return
 
@@ -803,71 +958,76 @@ func _recalculate_wand_preview(img_p: Vector2i) -> void:
 		_preview_mask_tex = null
 		return
 
-	# PackedByteArray — Dictionary'e göre çok daha hızlı ziyaret takibi
+	# PackedInt32Array encodes pixel as y*W+x — no Vector2i heap allocations
 	var visited := PackedByteArray()
 	visited.resize(W * H)
 	visited.fill(0)
-	var queue := [img_p]
+	var queue := PackedInt32Array()
 	var head := 0
-	visited[img_p.y * W + img_p.x] = 1
+	var start_idx := img_p.y * W + img_p.x
+	visited[start_idx] = 1
+	queue.append(start_idx)
 
-	const MAX_PREVIEW = 8000
+	const MAX_PREVIEW := 8000
+	var bg_r := bg.r; var bg_g := bg.g; var bg_b := bg.b
 
 	while head < queue.size() and queue.size() < MAX_PREVIEW:
-		var p: Vector2i = queue[head]
+		var flat: int = queue[head]
 		head += 1
-		preview_mask.append(p)
+		var px: int = flat % W
+		var py: int = flat / W
+		preview_mask.append(Vector2i(px, py))
 
-		# 4-way check (inline — array alokasyonundan kaçın)
 		var nx: int
 		var ny: int
 		var n_idx: int
+		var c: Color
+		var dr: float; var dg: float; var db: float
 
-		nx = p.x - 1
+		nx = px - 1
 		if nx >= 0:
-			n_idx = p.y * W + nx
+			n_idx = py * W + nx
 			if visited[n_idx] == 0:
 				visited[n_idx] = 1
-				var c: Color = img.get_pixel(nx, p.y)
-				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				c = img.get_pixel(nx, py)
+				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
 				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(Vector2i(nx, p.y))
+					queue.append(n_idx)
 
-		nx = p.x + 1
+		nx = px + 1
 		if nx < W:
-			n_idx = p.y * W + nx
+			n_idx = py * W + nx
 			if visited[n_idx] == 0:
 				visited[n_idx] = 1
-				var c: Color = img.get_pixel(nx, p.y)
-				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				c = img.get_pixel(nx, py)
+				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
 				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(Vector2i(nx, p.y))
+					queue.append(n_idx)
 
-		ny = p.y - 1
+		ny = py - 1
 		if ny >= 0:
-			n_idx = ny * W + p.x
+			n_idx = ny * W + px
 			if visited[n_idx] == 0:
 				visited[n_idx] = 1
-				var c: Color = img.get_pixel(p.x, ny)
-				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				c = img.get_pixel(px, ny)
+				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
 				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(Vector2i(p.x, ny))
+					queue.append(n_idx)
 
-		ny = p.y + 1
+		ny = py + 1
 		if ny < H:
-			n_idx = ny * W + p.x
+			n_idx = ny * W + px
 			if visited[n_idx] == 0:
 				visited[n_idx] = 1
-				var c: Color = img.get_pixel(p.x, ny)
-				var dr := c.r - bg.r; var dg := c.g - bg.g; var db := c.b - bg.b
+				c = img.get_pixel(px, ny)
+				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
 				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(Vector2i(p.x, ny))
+					queue.append(n_idx)
 
 	if not preview_mask.is_empty():
 		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color
 		mask_color.a = 0.45
 
-		# Önbellek: boyut eşleşiyorsa Image.create yerine mevcut image'ı sıfırla
 		if _preview_mask_img == null or _preview_mask_img.get_width() != W or _preview_mask_img.get_height() != H:
 			_preview_mask_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
 		else:
@@ -895,7 +1055,7 @@ func _delete_rect(idx: int) -> void:
 	for i in range(selected_indices.size()):
 		if selected_indices[i] > idx:
 			selected_indices[i] -= 1
-	selection_changed.emit(selected_indices)
+	_emit_selection_changed()
 	rects_changed.emit()
 	queue_redraw()
 
@@ -912,7 +1072,7 @@ func _delete_selected_rects() -> void:
 		if idx < locked_states.size():
 			locked_states.remove_at(idx)
 	selected_indices.clear()
-	selection_changed.emit(selected_indices)
+	_emit_selection_changed()
 	rects_changed.emit()
 	queue_redraw()
 
@@ -957,7 +1117,7 @@ func _duplicate_selected_rects() -> void:
 		new_selected_indices.append(rects.size() - 1)
 		
 	selected_indices = new_selected_indices
-	selection_changed.emit(selected_indices)
+	_emit_selection_changed()
 	rects_changed.emit()
 	queue_redraw()
 
@@ -989,6 +1149,6 @@ func _merge_selected_rects() -> void:
 	locked_states.append(false)
 	
 	selected_indices = [rects.size() - 1]
-	selection_changed.emit(selected_indices)
+	_emit_selection_changed()
 	rects_changed.emit()
 	queue_redraw()

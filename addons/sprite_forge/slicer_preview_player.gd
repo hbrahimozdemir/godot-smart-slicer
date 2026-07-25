@@ -175,21 +175,17 @@ func _update_preview_texture() -> void:
 	_preview_label.text = "Frame: %d" % idx
 
 func _sort_indices_spatially(indices: Array) -> Array:
-	var list: Array = []
+	# Filter valid indices first, then sort directly — no intermediate Dictionary allocations
+	var valid: Array[int] = []
 	for idx in indices:
 		if idx >= 0 and idx < rects.size():
-			list.append({ "index": idx, "rect": rects[idx] })
-			
-	list.sort_custom(func(a, b):
-		var ra: Rect2 = a["rect"]
-		var rb: Rect2 = b["rect"]
-		# Sort by y first, then x
+			valid.append(idx)
+
+	valid.sort_custom(func(a: int, b: int) -> bool:
+		var ra: Rect2 = rects[a]
+		var rb: Rect2 = rects[b]
 		if abs(ra.position.y - rb.position.y) > 4:
 			return ra.position.y < rb.position.y
 		return ra.position.x < rb.position.x
 	)
-	
-	var res: Array = []
-	for item in list:
-		res.append(item["index"])
-	return res
+	return valid

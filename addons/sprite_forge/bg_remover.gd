@@ -94,10 +94,9 @@ static func _edge_kmeans(img: Image, W: int, H: int) -> Array:
 
 static func _bfs_fill(img: Image, bg: Color, tol: float,
 		W: int, H: int, removed: PackedByteArray) -> void:
-	# removed'un kopyasını ziyaret haritası olarak kullan — GDScript döngüsünden çok daha hızlı
 	var visited: PackedByteArray = removed.duplicate()
 
-	var queue: Array = []
+	var queue := PackedInt32Array()
 	var head: int = 0
 
 	for x in range(W):
@@ -108,27 +107,27 @@ static func _bfs_fill(img: Image, bg: Color, tol: float,
 		_try_seed(queue, visited, img, W - 1, y, bg, tol, W)
 
 	while head < queue.size():
-		var p: Vector2i = queue[head]
+		var idx: int = queue[head]
 		head += 1
-		removed[p.y * W + p.x] = 1
+		removed[idx] = 1
 
-		var nx: int
-		var ny: int
+		var px: int = idx % W
+		var py: int = idx / W
 
-		nx = p.x - 1
+		var nx: int = px - 1
 		if nx >= 0:
-			_try_seed(queue, visited, img, nx, p.y, bg, tol, W)
-		nx = p.x + 1
+			_try_seed(queue, visited, img, nx, py, bg, tol, W)
+		nx = px + 1
 		if nx < W:
-			_try_seed(queue, visited, img, nx, p.y, bg, tol, W)
-		ny = p.y - 1
+			_try_seed(queue, visited, img, nx, py, bg, tol, W)
+		var ny: int = py - 1
 		if ny >= 0:
-			_try_seed(queue, visited, img, p.x, ny, bg, tol, W)
-		ny = p.y + 1
+			_try_seed(queue, visited, img, px, ny, bg, tol, W)
+		ny = py + 1
 		if ny < H:
-			_try_seed(queue, visited, img, p.x, ny, bg, tol, W)
+			_try_seed(queue, visited, img, px, ny, bg, tol, W)
 
-static func _try_seed(queue: Array, visited: PackedByteArray, img: Image,
+static func _try_seed(queue: PackedInt32Array, visited: PackedByteArray, img: Image,
 		x: int, y: int, bg: Color, tol: float, W: int) -> void:
 	var idx: int = y * W + x
 	if visited[idx] != 0:
@@ -136,7 +135,7 @@ static func _try_seed(queue: Array, visited: PackedByteArray, img: Image,
 	visited[idx] = 1
 	var c: Color = img.get_pixel(x, y)
 	if c.a < 0.05 or _dist(c, bg) <= tol:
-		queue.append(Vector2i(x, y))
+		queue.append(idx)
 
 static func _apply_matting(img: Image, removed: PackedByteArray,
 		W: int, H: int, feather: bool) -> void:
@@ -233,24 +232,27 @@ static func magic_wand_erase(image: Image, start_x: int, start_y: int, tolerance
 	visited.resize(W * H)
 	visited.fill(0)
 
-	var queue: Array = []
+	var queue := PackedInt32Array()
 	var head: int = 0
 	
 	_try_seed(queue, visited, img, start_x, start_y, bg, tolerance, W)
 
 	while head < queue.size():
-		var p: Vector2i = queue[head]
+		var idx: int = queue[head]
 		head += 1
-		removed[p.y * W + p.x] = 1
+		removed[idx] = 1
 
-		var nx: int = p.x - 1
-		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
-		nx = p.x + 1
-		if nx < W: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
-		var ny: int = p.y - 1
-		if ny >= 0: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
-		ny = p.y + 1
-		if ny < H: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+		var px: int = idx % W
+		var py: int = idx / W
+
+		var nx: int = px - 1
+		if nx >= 0: _try_seed(queue, visited, img, nx, py, bg, tolerance, W)
+		nx = px + 1
+		if nx < W: _try_seed(queue, visited, img, nx, py, bg, tolerance, W)
+		var ny: int = py - 1
+		if ny >= 0: _try_seed(queue, visited, img, px, ny, bg, tolerance, W)
+		ny = py + 1
+		if ny < H: _try_seed(queue, visited, img, px, ny, bg, tolerance, W)
 
 	for y in range(H):
 		for x in range(W):
@@ -276,7 +278,7 @@ static func brush_erase(image: Image, center_x: int, center_y: int, radius: floa
 					image.set_pixel(x, y, Color(0.0, 0.0, 0.0, 0.0))
 	return image
 
-static func brush_paint(image: Image, center_x: int, center_y: int, radius: float, color: Color, is_square: bool = false) -> Image:
+static func brush_paint(image: Image, center_x: int, center_y: int, radius: float, color: Color, is_square: bool = false, order_behind: bool = false) -> Image:
 	image.convert(Image.FORMAT_RGBA8)
 	var W: int = image.get_width()
 	var H: int = image.get_height()
@@ -284,30 +286,42 @@ static func brush_paint(image: Image, center_x: int, center_y: int, radius: floa
 
 	for y in range(max(0, center_y - r_ceil), min(H, center_y + r_ceil + 1)):
 		for x in range(max(0, center_x - r_ceil), min(W, center_x + r_ceil + 1)):
-			if is_square:
-				image.set_pixel(x, y, color)
-			else:
+			var apply_pixel := is_square
+			if not apply_pixel:
 				var dx := x - center_x
 				var dy := y - center_y
 				if float(dx*dx + dy*dy) <= radius*radius:
-					image.set_pixel(x, y, color)
+					apply_pixel = true
+			if apply_pixel:
+				if order_behind:
+					var dst_color := image.get_pixel(x, y)
+					var blended_color := color.blend(dst_color)
+					image.set_pixel(x, y, blended_color)
+				else:
+					if color.a < 1.0:
+						var dst_color := image.get_pixel(x, y)
+						var blended_color := dst_color.blend(color)
+						image.set_pixel(x, y, blended_color)
+					else:
+						image.set_pixel(x, y, color)
 	return image
 
-static func paste_stamp_transformed(
+static func paste_frame_transformed(
 	base_image: Image,
-	stamp_image: Image,
+	frame_image: Image,
 	pos: Vector2,
 	scale: Vector2,
 	rotation: float,
-	pivot: Vector2
+	pivot: Vector2,
+	order_behind: bool = false
 ) -> Image:
 	base_image.convert(Image.FORMAT_RGBA8)
-	stamp_image.convert(Image.FORMAT_RGBA8)
+	frame_image.convert(Image.FORMAT_RGBA8)
 	
 	var dst_w := base_image.get_width()
 	var dst_h := base_image.get_height()
-	var src_w := stamp_image.get_width()
-	var src_h := stamp_image.get_height()
+	var src_w := frame_image.get_width()
+	var src_h := frame_image.get_height()
 	
 	var xform := Transform2D()
 	xform = xform.translated(pos)
@@ -344,13 +358,20 @@ static func paste_stamp_transformed(
 			var sx := int(round(src_pos.x))
 			var sy := int(round(src_pos.y))
 			if sx >= 0 and sx < src_w and sy >= 0 and sy < src_h:
-				var src_color := stamp_image.get_pixel(sx, sy)
+				var src_color := frame_image.get_pixel(sx, sy)
 				if src_color.a > 0.0:
 					var dst_color := base_image.get_pixel(x, y)
-					var blended_color := dst_color.blend(src_color)
+					var blended_color: Color
+					if order_behind:
+						blended_color = src_color.blend(dst_color)
+					else:
+						blended_color = dst_color.blend(src_color)
 					base_image.set_pixel(x, y, blended_color)
 					
 	return base_image
+
+static func paste_stamp_transformed(base_image: Image, stamp_image: Image, pos: Vector2, scale: Vector2, rotation: float, pivot: Vector2, order_behind: bool = false) -> Image:
+	return paste_frame_transformed(base_image, stamp_image, pos, scale, rotation, pivot, order_behind)
 
 static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_color: Color, tolerance: float) -> Image:
 	var img: Image = image.duplicate()
@@ -375,24 +396,27 @@ static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_col
 	visited.resize(W * H)
 	visited.fill(0)
 
-	var queue: Array = []
+	var queue := PackedInt32Array()
 	var head: int = 0
 	
 	_try_seed(queue, visited, img, start_x, start_y, bg, tolerance, W)
 
 	while head < queue.size():
-		var p: Vector2i = queue[head]
+		var idx: int = queue[head]
 		head += 1
-		recolored[p.y * W + p.x] = 1
+		recolored[idx] = 1
 
-		var nx: int = p.x - 1
-		if nx >= 0: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
-		nx = p.x + 1
-		if nx < W: _try_seed(queue, visited, img, nx, p.y, bg, tolerance, W)
-		var ny: int = p.y - 1
-		if ny >= 0: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
-		ny = p.y + 1
-		if ny < H: _try_seed(queue, visited, img, p.x, ny, bg, tolerance, W)
+		var px: int = idx % W
+		var py: int = idx / W
+
+		var nx: int = px - 1
+		if nx >= 0: _try_seed(queue, visited, img, nx, py, bg, tolerance, W)
+		nx = px + 1
+		if nx < W: _try_seed(queue, visited, img, nx, py, bg, tolerance, W)
+		var ny: int = py - 1
+		if ny >= 0: _try_seed(queue, visited, img, px, ny, bg, tolerance, W)
+		ny = py + 1
+		if ny < H: _try_seed(queue, visited, img, px, ny, bg, tolerance, W)
 
 	for y in range(H):
 		for x in range(W):
