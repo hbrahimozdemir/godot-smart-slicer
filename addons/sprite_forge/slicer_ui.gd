@@ -996,6 +996,8 @@ func _on_resize_image_requested(new_w: int, new_h: int, interp_mode: int, scale_
 	var new_tex := ImageTexture.create_from_image(resized_img)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 	_save_edited_texture()
 	_refresh_list()
 	_update_props()
@@ -1085,6 +1087,8 @@ func _flip_main_texture(flip_h: bool, flip_v: bool) -> void:
 	var new_tex := ImageTexture.create_from_image(img)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 	_save_edited_texture()
 	
 	# Flip all rects symmetrically
@@ -1127,6 +1131,11 @@ func _on_extract(only_selected: bool = false) -> void:
 		
 	if export_rects.is_empty():
 		return
+
+	if _current_tex is ImageTexture:
+		_ensure_edited_path()
+		if not _save_edited_texture():
+			return
 
 	var a_name := "default"
 	if _anim_name_edit and _anim_name_edit.text.strip_edges() != "":
@@ -1379,6 +1388,8 @@ func _apply_stamp() -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 	_save_edited_texture()
 	
 	_select_tool("")
@@ -1416,6 +1427,8 @@ func _do_brush_erase(img_pos: Vector2i) -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_brush_paint_clicked(img_pos: Vector2i) -> void:
 	_push_image_state()
@@ -1449,6 +1462,8 @@ func _do_brush_paint(img_pos: Vector2i) -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_recolor_clicked(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
@@ -1470,6 +1485,8 @@ func _on_recolor_clicked(img_pos: Vector2i) -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 
 func _on_erase_clicked(img_pos: Vector2i) -> void:
 	if not _current_tex or _current_tex_path.is_empty():
@@ -1492,6 +1509,8 @@ func _on_erase_clicked(img_pos: Vector2i) -> void:
 	var new_tex := ImageTexture.create_from_image(result)
 	_current_tex = new_tex
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 
 func _ensure_edited_path() -> void:
 	if _current_tex_path.is_empty():
@@ -1502,13 +1521,14 @@ func _ensure_edited_path() -> void:
 		_current_tex_path = base_dir + "/" + base_name + "_edited.png"
 		_path_label.text = base_name + "_edited.png"
 
-func _save_edited_texture() -> void:
+func _save_edited_texture() -> bool:
 	if not _current_tex or _current_tex_path.is_empty():
-		return
+		return false
 	var abs_out := ProjectSettings.globalize_path(_current_tex_path)
 	var err: Error = _current_tex.get_image().save_png(abs_out)
 	if err != OK:
 		push_error("SpriteSlicer: Could not save edited PNG back to disk: " + abs_out)
+	return err == OK
 
 func _on_remove_bg() -> void:
 	if _current_tex_path.is_empty():
@@ -1517,7 +1537,7 @@ func _on_remove_bg() -> void:
 	_push_image_state()
 
 	var abs_src: String = ProjectSettings.globalize_path(_current_tex_path)
-	var src_img: Image = Image.load_from_file(abs_src)
+	var src_img: Image = _current_tex.get_image() if _current_tex else null
 	if src_img == null or src_img.is_empty():
 		push_error("SpriteSlicer: Could not load file: " + abs_src)
 		return
@@ -1541,6 +1561,8 @@ func _on_remove_bg() -> void:
 	_current_tex_path = res_out
 	_path_label.text  = base_name + "_nobg.png"
 	_canvas.update_texture(new_tex)
+	if _preview_player:
+		_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 	_canvas.set_zoom(_zoom)
 	_refresh_list()
 	_update_props()
@@ -1780,19 +1802,27 @@ func _push_history_state(state: Dictionary) -> void:
 	if _history:
 		_history.push_state(state)
 
-func _push_image_state() -> void:
-	if not _current_tex:
-		return
+func _capture_image_state() -> Dictionary:
+	if not _current_tex or not _canvas:
+		return {}
 	var img: Image = _current_tex.get_image()
-	if img and not img.is_empty():
-		var img_copy = Image.new()
-		img_copy.copy_from(img)
-		_push_history_state({
-			"type": "image",
-			"image": img_copy,
-			"path": _current_tex_path,
-			"rects": _canvas.rects.duplicate()
-		})
+	if not img or img.is_empty():
+		return {}
+	return {
+		"type": "image",
+		"image": img.duplicate(),
+		"path": _current_tex_path,
+		"rects": _canvas.rects.duplicate(),
+		"slice_names": _canvas.slice_names.duplicate(),
+		"slice_materials": _canvas.slice_materials.duplicate(),
+		"selected_indices": _canvas.selected_indices.duplicate(),
+		"locked_states": _canvas.locked_states.duplicate()
+	}
+
+func _push_image_state() -> void:
+	var state := _capture_image_state()
+	if not state.is_empty():
+		_push_history_state(state)
 
 func _push_slices_state() -> void:
 	if not _canvas:
@@ -1822,32 +1852,27 @@ func _apply_history_state(state: Dictionary) -> Dictionary:
 	var current_state := {}
 
 	if state["type"] == "image":
-		var img: Image = _current_tex.get_image()
-		if img and not img.is_empty():
-			var img_copy := Image.new()
-			img_copy.copy_from(img)
-			current_state = {
-				"type": "image",
-				"image": img_copy,
-				"path": _current_tex_path,
-				"rects": _canvas.rects.duplicate()
-			}
-
+		current_state = _capture_image_state()
 		var prev_img: Image = state["image"]
-		var prev_path: String = state["path"]
-		var abs_out := ProjectSettings.globalize_path(prev_path)
-		var err = prev_img.save_png(abs_out)
-		if err == OK:
-			_current_tex_path = prev_path
-			_path_label.text = prev_path.get_file()
-			var new_tex := ImageTexture.create_from_image(prev_img)
-			_current_tex = new_tex
-			_canvas.load_texture(new_tex)
-			if state.has("rects"):
-				_canvas.rects = state["rects"].duplicate()
-			_canvas.queue_redraw()
-			if _preview_player:
-				_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
+		_current_tex_path = state["path"]
+		_path_label.text = _current_tex_path.get_file()
+		_path_label.tooltip_text = _current_tex_path
+		var new_tex := ImageTexture.create_from_image(prev_img)
+		_current_tex = new_tex
+		_canvas.update_texture(new_tex)
+		_canvas.rects = state["rects"].duplicate()
+		_canvas.slice_names = state["slice_names"].duplicate()
+		_canvas.slice_materials = state["slice_materials"].duplicate()
+		_canvas.selected_indices = state["selected_indices"].duplicate()
+		_canvas.locked_states = state["locked_states"].duplicate()
+		_canvas._emit_selection_changed()
+		_canvas.queue_redraw()
+		_refresh_list()
+		_update_props()
+		_sync_list_highlight(_canvas.selected_indices)
+		# History restoration stays in memory; source files are never rewritten.
+		if _preview_player:
+			_preview_player.sync_preview(new_tex, _canvas.rects, _canvas.selected_indices)
 
 	elif state["type"] == "slices":
 		current_state = {
@@ -1869,6 +1894,7 @@ func _apply_history_state(state: Dictionary) -> Dictionary:
 
 		_canvas.selected_indices = state["selected_indices"].duplicate()
 		_canvas.locked_states = state["locked_states"].duplicate()
+		_canvas._emit_selection_changed()
 		_canvas.queue_redraw()
 		_refresh_list()
 		_update_props()

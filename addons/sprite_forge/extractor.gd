@@ -2,7 +2,7 @@
 
 ## SpriteForge slice extractor.
 ## Exports PNG slices, AtlasTextures, Shader scenes and SpriteFrames.
-## Key optimisation: actual_tex (load from disk) resolved once before any loop.
+## Preserve the current texture so edited pixels cannot be replaced by stale imports.
 
 static func extract(
 	texture: Texture2D,
@@ -47,7 +47,7 @@ static func extract(
 		push_error("SpriteSlicer: Source image is null or empty.")
 		return
 
-	# Resolve actual_tex ONCE — avoids calling load() N times per slice
+	# Keep the current texture, including unsaved history restoration.
 	var actual_tex: Texture2D = _resolve_texture(texture, src_path)
 
 	# --- Per-slice exports ---
@@ -173,11 +173,7 @@ static func _export_spriteframes(actual_tex: Texture2D, rects: Array[Rect2], ani
 ## Resolves the canonical Texture2D for the source path.
 ## If texture is a transient ImageTexture and src_path is valid, loads from disk
 ## to get a proper resource reference (needed for AtlasTexture.atlas).
-static func _resolve_texture(texture: Texture2D, src_path: String) -> Texture2D:
-	if texture is ImageTexture and src_path != "":
-		var loaded: Resource = load(src_path)
-		if loaded is Texture2D:
-			return loaded as Texture2D
+static func _resolve_texture(texture: Texture2D, _src_path: String) -> Texture2D:
 	return texture
 
 ## Returns a path guaranteed not to conflict with existing files.

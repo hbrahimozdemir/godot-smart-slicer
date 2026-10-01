@@ -375,7 +375,7 @@ static func paste_frame_transformed(
 	return base_image
 
 static func paste_stamp_transformed(base_image: Image, stamp_image: Image, pos: Vector2, scale: Vector2, rotation: float, pivot: Vector2, order_behind: bool = false) -> Image:
-	return paste_frame_transformed(base_image, stamp_image, pos, scale, rotation, pivot, order_behind)
+	return paste_frame_transformed(base_image, stamp_image, pos, scale, rotation, pivot, false, false, order_behind)
 
 static func magic_wand_recolor(image: Image, start_x: int, start_y: int, new_color: Color, tolerance: float) -> Image:
 	var img: Image = image.duplicate()
