@@ -1,6 +1,12 @@
 @tool
 extends Control
 
+const _rendererScript = preload("res://addons/sprite_forge/slicer_canvas_renderer.gd")
+const _actionsScript = preload("res://addons/sprite_forge/slicer_canvas_actions.gd")
+
+var _renderer: _rendererScript = _rendererScript.new(self)
+var _actions: _actionsScript = _actionsScript.new(self)
+
 signal selection_changed(indices: Array)
 signal rects_changed()
 signal rects_updated(indices: Array)
@@ -267,258 +273,25 @@ func _rect_at(pos: Vector2) -> int:
 # --- Drawing ---
 
 func _draw() -> void:
-	# Cached checkerboard background
-	_draw_checkerboard()
-
-	if not texture:
-		return
-
-	# If order_behind is true, draw frame texture underneath main texture
-	if order_behind and frame_mode and frame_tex:
-		_draw_frame_texture()
-
-	# Draw main texture (scaled by zoom)
-	var tex_size := Vector2(texture.get_width(), texture.get_height()) * zoom
-	draw_texture_rect(texture, Rect2(Vector2.ZERO, tex_size), false)
-
-	# If order_behind is false, draw frame texture on top of main texture
-	if not order_behind and frame_mode and frame_tex:
-		_draw_frame_texture()
-
-	# Draw grid snap visual helpers if active
-	if snap_to_grid:
-		var tex_w := texture.get_width()
-		var tex_h := texture.get_height()
-		var grid_color := Color(1.0, 1.0, 1.0, 0.12)
-		var sw := float(snap_w)
-		var sh := float(snap_h)
-		var x_pos := sw
-		while x_pos < float(tex_w):
-			draw_line(Vector2(x_pos, 0) * zoom, Vector2(x_pos, tex_h) * zoom, grid_color, 1.0)
-			x_pos += sw
-		var y_pos := sh
-		while y_pos < float(tex_h):
-			draw_line(Vector2(0, y_pos) * zoom, Vector2(tex_w, y_pos) * zoom, grid_color, 1.0)
-			y_pos += sh
-
-	# Draw slices (font fetched once)
-	var font := get_theme_font("font")
-	
-	# Viewport culling optimization
-	var has_vis_rect := false
-	var vis_rect := Rect2()
-	var parent := get_parent()
-	if parent is ScrollContainer:
-		var sc := parent as ScrollContainer
-		vis_rect = Rect2(sc.scroll_horizontal, sc.scroll_vertical, sc.size.x, sc.size.y)
-		# Expand by a margin to prevent popping when scrolling fast
-		vis_rect = vis_rect.grow(100.0)
-		has_vis_rect = true
-
-	for i in range(rects.size()):
-		if has_vis_rect:
-			var sr: Rect2 = _s(rects[i])
-			if not vis_rect.intersects(sr):
-				continue
-		_draw_slice(i, font)
-
-	# Drag selection box preview
-	if _selecting:
-		var sel_rect := Rect2(_select_p1 * zoom, (_select_p2 - _select_p1) * zoom)
-		draw_rect(sel_rect, Color(0.2, 0.6, 1.0, 0.15), true)
-		draw_rect(sel_rect, Color(0.3, 0.7, 1.0, 0.8), false, 1.5)
-
-	# Drag creation box preview
-	if _creating:
-		var preview := Rect2(_create_p1, _create_p2 - _create_p1).abs()
-		var sr: Rect2 = _s(preview)
-		draw_rect(sr, Color(0.3, 0.8, 1.0, 0.18), true)
-		draw_rect(sr, Color(0.3, 0.8, 1.0, 0.9), false, 1.5)
-
-	# Brush hover indicator
-	if (brush_erase_mode or paint_mode) and is_hovering:
-		var rad: float = float(brush_size) * zoom
-		var col := paint_color if paint_mode else Color(1.0, 0.3, 0.3, 0.75)
-		col.a = 0.8
-		if brush_is_square:
-			var size_val := rad * 2.0
-			var rect := Rect2(hover_mouse_pos - Vector2(rad, rad), Vector2(size_val, size_val))
-			draw_rect(rect, col, false, 1.5)
-		else:
-			draw_arc(hover_mouse_pos, rad, 0.0, TAU, 32, col, 1.5)
-
-	# Draw magic wand preview mask
-	if (erase_mode or recolor_mode) and is_hovering and _preview_mask_tex:
-		var overlay_size := Vector2(texture.get_width(), texture.get_height()) * zoom
-		draw_texture_rect(_preview_mask_tex, Rect2(Vector2.ZERO, overlay_size), false)
-
-	# Draw frame gizmo handles
-	if frame_mode and frame_tex:
-		_draw_frame_gizmo()
+	_renderer._draw()
 
 func _get_frame_transform_screen() -> Transform2D:
-	var t := Transform2D()
-	var zscale := frame_scale * zoom
-	if frame_flip_h: zscale.x *= -1.0
-	if frame_flip_v: zscale.y *= -1.0
-	t.x = Vector2(cos(frame_rotation), sin(frame_rotation)) * zscale.x
-	t.y = Vector2(-sin(frame_rotation), cos(frame_rotation)) * zscale.y
-	t.origin = (frame_pos * zoom) - (t.x * frame_pivot.x + t.y * frame_pivot.y)
-	return t
+	return _renderer._get_frame_transform_screen()
 
 func _get_frame_corners_screen() -> Dictionary:
-	if not frame_tex:
-		return {}
-	var xform := _get_frame_transform_screen()
-	var w := float(frame_tex.get_width())
-	var h := float(frame_tex.get_height())
-	var center_s := xform * Vector2(w * 0.5, h * 0.5)
-	var top_mid := xform * Vector2(w * 0.5, 0.0)
-	var rot_handle := xform * Vector2(w * 0.5, -32.0 / (frame_scale.y * zoom))
-	return {
-		"tl": xform * Vector2(0, 0),
-		"tr": xform * Vector2(w, 0),
-		"bl": xform * Vector2(0, h),
-		"br": xform * Vector2(w, h),
-		"center": center_s,
-		"top_mid": top_mid,
-		"rot_handle": rot_handle
-	}
+	return _renderer._get_frame_corners_screen()
 
 func _draw_frame_texture() -> void:
-	var draw_pos := frame_pos * zoom
-	var draw_scale := frame_scale * zoom
-	if frame_flip_h: draw_scale.x *= -1.0
-	if frame_flip_v: draw_scale.y *= -1.0
-	draw_set_transform(draw_pos, frame_rotation, draw_scale)
-	draw_texture(frame_tex, -frame_pivot, Color(1.0, 1.0, 1.0, 0.75))
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	_renderer._draw_frame_texture()
 
 func _draw_frame_gizmo() -> void:
-	if not frame_tex:
-		return
-
-	var w := float(frame_tex.get_width())
-	var h := float(frame_tex.get_height())
-	var draw_pos := frame_pos * zoom
-	var draw_scale := frame_scale * zoom
-	if frame_flip_h: draw_scale.x *= -1.0
-	if frame_flip_v: draw_scale.y *= -1.0
-	var eff_scale := draw_scale.abs()
-
-	# Apply exact same GPU matrix as _draw_frame_texture()
-	draw_set_transform(draw_pos, frame_rotation, draw_scale)
-
-	# Local rectangle corners relative to pivot
-	var tl: Vector2 = -frame_pivot
-	var tr: Vector2 = -frame_pivot + Vector2(w, 0.0)
-	var br: Vector2 = -frame_pivot + Vector2(w, h)
-	var bl: Vector2 = -frame_pivot + Vector2(0.0, h)
-
-	var poly := PackedVector2Array([tl, tr, br, bl])
-	var line_w: float = 2.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
-	var shadow_w: float = 3.5 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
-
-	# High contrast bounding box & fill
-	draw_polyline(poly + PackedVector2Array([tl]), Color(0.0, 0.0, 0.0, 0.95), shadow_w)
-	draw_polyline(poly + PackedVector2Array([tl]), Color(0.1, 0.85, 1.0, 1.0), line_w)
-	draw_colored_polygon(poly, Color(0.1, 0.75, 1.0, 0.12))
-
-	# 4 Corner scale handles
-	var handle_r_avg: float = 7.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
-	for cp in [tl, tr, bl, br]:
-		draw_circle(cp, handle_r_avg, Color(0.1, 0.85, 1.0))
-		draw_arc(cp, handle_r_avg, 0.0, TAU, 20, Color.WHITE, line_w)
-
-	# Rotation handle
-	var top_mid: Vector2 = -frame_pivot + Vector2(w * 0.5, 0.0)
-	var rot_off_y: float = -32.0 / max(0.001, eff_scale.y)
-	var rot_handle: Vector2 = top_mid + Vector2(0.0, rot_off_y)
-	var rot_r_avg: float = 9.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5)
-
-	draw_line(top_mid, rot_handle, Color(1.0, 0.75, 0.1, 0.9), line_w * 1.2)
-	draw_circle(rot_handle, rot_r_avg, Color(1.0, 0.55, 0.0, 0.95))
-	draw_arc(rot_handle, rot_r_avg, 0.0, TAU, 24, Color.WHITE, line_w * 1.2)
-
-	# ↻ Icon inside rotation handle
-	var arc_r: float = rot_r_avg * 0.5
-	draw_arc(rot_handle, arc_r, -0.6 * PI, 1.1 * PI, 16, Color.WHITE, line_w * 1.2)
-	var tip_angle: float = 1.1 * PI
-	var tip_pos: Vector2 = rot_handle + Vector2(cos(tip_angle), sin(tip_angle)) * arc_r
-	var arrow_p1: Vector2 = tip_pos + Vector2(3.0 / eff_scale.x, -2.0 / eff_scale.y)
-	var arrow_p2: Vector2 = tip_pos + Vector2(-1.0 / eff_scale.x, 3.0 / eff_scale.y)
-	draw_line(tip_pos, arrow_p1, Color.WHITE, line_w * 1.2)
-	draw_line(tip_pos, arrow_p2, Color.WHITE, line_w * 1.2)
-
-	# Pivot marker at center
-	draw_circle(Vector2.ZERO, 4.0 / max(0.001, (eff_scale.x + eff_scale.y) * 0.5), Color(1.0, 0.3, 0.3, 0.9))
-
-	# Restore default transform
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+	_renderer._draw_frame_gizmo()
 
 func _draw_checkerboard() -> void:
-	if _checker_tex == null:
-		var cell: int = 8
-		var img := Image.create(cell * 2, cell * 2, false, Image.FORMAT_RGB8)
-		var c0 := Color(0.22, 0.22, 0.22)
-		var c1 := Color(0.30, 0.30, 0.30)
-		for y in range(cell * 2):
-			for x in range(cell * 2):
-				var is_c0: bool = ((x < cell) and (y < cell)) or ((x >= cell) and (y >= cell))
-				img.set_pixel(x, y, c0 if is_c0 else c1)
-		_checker_tex = ImageTexture.create_from_image(img)
-	
-	draw_texture_rect(_checker_tex, Rect2(Vector2.ZERO, size), true)
+	_renderer._draw_checkerboard()
 
 func _draw_slice(i: int, font: Font) -> void:
-	var sr: Rect2 = _s(rects[i])
-	var is_sel := _selected_set.has(i)
-	var is_locked := i < locked_states.size() and locked_states[i]
-
-	# Pre-defined color constants to avoid repeated Color literal allocations
-	const COL_SEL_LOCKED_FILL  := Color(0.60, 0.60, 0.60, 0.15)
-	const COL_SEL_LOCKED_BORDER:= Color(0.55, 0.55, 0.55, 1.00)
-	const COL_SEL_FILL         := Color(0.15, 1.00, 0.25, 0.20)
-	const COL_SEL_BORDER       := Color(0.10, 1.00, 0.20, 1.00)
-	const COL_HANDLE_RED       := Color(1.0, 0.2, 0.2)
-	const COL_NORM_LOCKED_FILL := Color(0.50, 0.50, 0.50, 0.08)
-	const COL_NORM_LOCKED_BDR  := Color(0.50, 0.50, 0.50, 0.65)
-	const COL_NORM_FILL        := Color(1.00, 0.85, 0.00, 0.12)
-	const COL_NORM_BORDER      := Color(1.00, 0.85, 0.00, 0.90)
-
-	if is_sel:
-		if is_locked:
-			draw_rect(sr, COL_SEL_LOCKED_FILL, true)
-			draw_rect(sr, COL_SEL_LOCKED_BORDER, false, 2.0)
-		else:
-			draw_rect(sr, COL_SEL_FILL, true)
-			draw_rect(sr, COL_SEL_BORDER, false, 2.0)
-			
-			# Show handles only when exactly one slice is selected
-			if selected_indices.size() == 1:
-				var corners := [
-					sr.position,
-					Vector2(sr.end.x, sr.position.y),
-					Vector2(sr.position.x, sr.end.y),
-					sr.end
-				]
-				for cp in corners:
-					draw_circle(cp, HANDLE_R, COL_HANDLE_RED)
-					draw_arc(cp, HANDLE_R, 0.0, TAU, 20, Color.WHITE, 1.5)
-	else:
-		if is_locked:
-			draw_rect(sr, COL_NORM_LOCKED_FILL, true)
-			draw_rect(sr, COL_NORM_LOCKED_BDR, false, 1.5)
-		else:
-			draw_rect(sr, COL_NORM_FILL, true)
-			draw_rect(sr, COL_NORM_BORDER, false, 1.5)
-
-	var label_col := Color(0.5, 0.5, 0.5) if is_locked else (Color(0.1, 1.0, 0.2) if is_sel else Color(1.0, 0.9, 0.1))
-	var label_txt := "L " + str(i) if is_locked else str(i)
-	draw_string(font, sr.position + Vector2(3, 13), label_txt,
-		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, label_col)
-
-# --- Input handling ---
+	_renderer._draw_slice(i, font)
 
 func _gui_input(event: InputEvent) -> void:
 	if not texture:
@@ -1014,216 +787,16 @@ func _on_mouse_motion(pos: Vector2) -> void:
 		queue_redraw()
 
 func _recalculate_wand_preview(img_p: Vector2i) -> void:
-	preview_mask.clear()
-	if not texture:
-		_preview_mask_tex = null
-		return
-	var img := texture.get_image()
-	if not img or img.is_empty():
-		_preview_mask_tex = null
-		return
-	var W := img.get_width()
-	var H := img.get_height()
-	if img_p.x < 0 or img_p.y < 0 or img_p.x >= W or img_p.y >= H:
-		_preview_mask_tex = null
-		return
-
-	var bg := img.get_pixel(img_p.x, img_p.y)
-	if bg.a < 0.01:
-		_preview_mask_tex = null
-		return
-
-	# PackedInt32Array encodes pixel as y*W+x — no Vector2i heap allocations
-	var visited := PackedByteArray()
-	visited.resize(W * H)
-	visited.fill(0)
-	var queue := PackedInt32Array()
-	var head := 0
-	var start_idx := img_p.y * W + img_p.x
-	visited[start_idx] = 1
-	queue.append(start_idx)
-
-	const MAX_PREVIEW := 8000
-	var bg_r := bg.r; var bg_g := bg.g; var bg_b := bg.b
-
-	while head < queue.size() and queue.size() < MAX_PREVIEW:
-		var flat: int = queue[head]
-		head += 1
-		var px: int = flat % W
-		var py: int = flat / W
-		preview_mask.append(Vector2i(px, py))
-
-		var nx: int
-		var ny: int
-		var n_idx: int
-		var c: Color
-		var dr: float; var dg: float; var db: float
-
-		nx = px - 1
-		if nx >= 0:
-			n_idx = py * W + nx
-			if visited[n_idx] == 0:
-				visited[n_idx] = 1
-				c = img.get_pixel(nx, py)
-				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
-				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(n_idx)
-
-		nx = px + 1
-		if nx < W:
-			n_idx = py * W + nx
-			if visited[n_idx] == 0:
-				visited[n_idx] = 1
-				c = img.get_pixel(nx, py)
-				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
-				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(n_idx)
-
-		ny = py - 1
-		if ny >= 0:
-			n_idx = ny * W + px
-			if visited[n_idx] == 0:
-				visited[n_idx] = 1
-				c = img.get_pixel(px, ny)
-				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
-				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(n_idx)
-
-		ny = py + 1
-		if ny < H:
-			n_idx = ny * W + px
-			if visited[n_idx] == 0:
-				visited[n_idx] = 1
-				c = img.get_pixel(px, ny)
-				dr = c.r - bg_r; dg = c.g - bg_g; db = c.b - bg_b
-				if sqrt(dr*dr*0.299 + dg*dg*0.587 + db*db*0.114) <= tolerance:
-					queue.append(n_idx)
-
-	if not preview_mask.is_empty():
-		var mask_color := Color(0.3, 0.7, 1.0, 0.45) if erase_mode else paint_color
-		mask_color.a = 0.45
-
-		if _preview_mask_img == null or _preview_mask_img.get_width() != W or _preview_mask_img.get_height() != H:
-			_preview_mask_img = Image.create(W, H, false, Image.FORMAT_RGBA8)
-		else:
-			_preview_mask_img.fill(Color.TRANSPARENT)
-
-		for p in preview_mask:
-			_preview_mask_img.set_pixel(p.x, p.y, mask_color)
-
-		if _preview_mask_tex == null:
-			_preview_mask_tex = ImageTexture.create_from_image(_preview_mask_img)
-		else:
-			_preview_mask_tex.update(_preview_mask_img)
-	else:
-		_preview_mask_tex = null
+	_actions._recalculate_wand_preview(img_p)
 
 func _delete_rect(idx: int) -> void:
-	rects.remove_at(idx)
-	slice_names.remove_at(idx)
-	if idx < slice_materials.size():
-		slice_materials.remove_at(idx)
-	if idx < locked_states.size():
-		locked_states.remove_at(idx)
-	selected_indices.erase(idx)
-	# Shift remaining indices down
-	for i in range(selected_indices.size()):
-		if selected_indices[i] > idx:
-			selected_indices[i] -= 1
-	_emit_selection_changed()
-	rects_changed.emit()
-	queue_redraw()
+	_actions._delete_rect(idx)
 
 func _delete_selected_rects() -> void:
-	slice_action_started.emit()
-	var to_delete := selected_indices.duplicate()
-	to_delete.sort()
-	to_delete.reverse() # Delete from back to prevent index shifts
-	for idx in to_delete:
-		rects.remove_at(idx)
-		slice_names.remove_at(idx)
-		if idx < slice_materials.size():
-			slice_materials.remove_at(idx)
-		if idx < locked_states.size():
-			locked_states.remove_at(idx)
-	selected_indices.clear()
-	_emit_selection_changed()
-	rects_changed.emit()
-	queue_redraw()
+	_actions._delete_selected_rects()
 
 func _duplicate_selected_rects() -> void:
-	if selected_indices.is_empty():
-		return
-	
-	slice_action_started.emit()
-	var offset := Vector2(8, 8)
-	var tex_w := texture.get_width()
-	var tex_h := texture.get_height()
-	
-	var new_selected_indices: Array = []
-	for idx in selected_indices:
-		var orig_rect = rects[idx]
-		var orig_name = slice_names[idx]
-		
-		# Offset and clamp within texture boundaries
-		var new_pos = orig_rect.position + offset
-		if new_pos.x + orig_rect.size.x > tex_w:
-			new_pos.x = tex_w - orig_rect.size.x
-		if new_pos.y + orig_rect.size.y > tex_h:
-			new_pos.y = tex_h - orig_rect.size.y
-		if new_pos.x < 0:
-			new_pos.x = 0
-		if new_pos.y < 0:
-			new_pos.y = 0
-			
-		var new_rect = Rect2(new_pos, orig_rect.size)
-		var new_name = orig_name
-		if new_name != "":
-			new_name = new_name + "_copy"
-		
-		var new_mat := ""
-		if idx < slice_materials.size():
-			new_mat = slice_materials[idx]
-		
-		rects.append(new_rect)
-		slice_names.append(new_name)
-		slice_materials.append(new_mat)
-		locked_states.append(false)
-		new_selected_indices.append(rects.size() - 1)
-		
-	selected_indices = new_selected_indices
-	_emit_selection_changed()
-	rects_changed.emit()
-	queue_redraw()
+	_actions._duplicate_selected_rects()
 
 func _merge_selected_rects() -> void:
-	if selected_indices.size() < 2:
-		return
-		
-	slice_action_started.emit()
-	
-	var union_rect: Rect2 = rects[selected_indices[0]]
-	for i in range(1, selected_indices.size()):
-		var idx = selected_indices[i]
-		union_rect = union_rect.merge(rects[idx])
-		
-	var to_delete := selected_indices.duplicate()
-	to_delete.sort()
-	to_delete.reverse()
-	for idx in to_delete:
-		rects.remove_at(idx)
-		slice_names.remove_at(idx)
-		if idx < slice_materials.size():
-			slice_materials.remove_at(idx)
-		if idx < locked_states.size():
-			locked_states.remove_at(idx)
-			
-	rects.append(union_rect)
-	slice_names.append("")
-	slice_materials.append("")
-	locked_states.append(false)
-	
-	selected_indices = [rects.size() - 1]
-	_emit_selection_changed()
-	rects_changed.emit()
-	queue_redraw()
+	_actions._merge_selected_rects()

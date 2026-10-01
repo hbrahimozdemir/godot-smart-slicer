@@ -29,21 +29,27 @@ func _ready() -> void:
 	title_hbox.add_theme_constant_override("separation", 5)
 	add_child(title_hbox)
 	
-	var title := Label.new()
-	title.text = "Animation Preview"
+	var title := Button.new()
+	title.text = "▼ Animation"
+	title.toggle_mode = true
+	title.button_pressed = true
+	title.flat = true
+	title.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	title.tooltip_text = "Expand or collapse animation preview"
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_hbox.add_child(title)
 	
 	var bg_option := OptionButton.new()
-	bg_option.add_item("BG: Trans")
-	bg_option.add_item("BG: Black")
-	bg_option.add_item("BG: White")
+	bg_option.add_item("Transparent")
+	bg_option.add_item("Black")
+	bg_option.add_item("White")
+	bg_option.tooltip_text = "Preview background"
 	bg_option.selected = 0
 	bg_option.item_selected.connect(_on_bg_selected)
 	title_hbox.add_child(bg_option)
 	
 	var bg_panel := PanelContainer.new()
-	bg_panel.custom_minimum_size = Vector2(0, 120)
+	bg_panel.custom_minimum_size = Vector2(0, 140)
 	bg_panel.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bg_panel.size_flags_vertical = Control.SIZE_FILL
 	add_child(bg_panel)
@@ -109,6 +115,11 @@ func _ready() -> void:
 	_preview_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_preview_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	controls.add_child(_preview_label)
+	title.toggled.connect(func(expanded: bool):
+		bg_panel.visible = expanded
+		controls.visible = expanded
+		title.text = ("▼ " if expanded else "▶ ") + "Animation"
+	)
 
 func _on_bg_selected(index: int) -> void:
 	match index:
