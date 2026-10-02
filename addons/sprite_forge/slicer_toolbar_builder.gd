@@ -35,10 +35,10 @@ func _make_toolbar() -> Control:
 	_tool_tabs.name = "ToolTabs"
 	_tool_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	tb_outer.add_child(_tool_tabs)
+	var image_tools := _make_tool_page("Image")
 	var slice_tools := _make_tool_page("Slice")
 	var paint_tools := _make_tool_page("Paint")
 	var compose_tools := _make_tool_page("Compose")
-	var image_tools := _make_tool_page("Image")
 
 
 	var select_btn := Button.new()
@@ -360,6 +360,6 @@ func sync_tool(tool_name: String) -> void:
 	var titles := {"wand": "Wand erase", "brush_erase": "Eraser", "recolor": "Recolor", "paint": "Paint", "stamp": "Frame", "text": "Text"}
 	_active_tool_label.text = str(titles.get(tool_name, "Select")) + " mode"
 	if tool_name in ["wand", "brush_erase", "recolor", "paint"]:
-		_tool_tabs.current_tab = 1
-	elif tool_name in ["stamp", "text"]:
 		_tool_tabs.current_tab = 2
+	elif tool_name in ["stamp", "text"]:
+		_tool_tabs.current_tab = 3
